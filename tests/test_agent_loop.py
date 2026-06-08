@@ -205,6 +205,37 @@ def test_glob():
     print("PASS: glob (재귀 ** / 단일 패턴 / 매치 없음)")
 
 
+def test_web_search():
+    captured = {}
+
+    def fake_get_json(url, headers, timeout):
+        captured["url"] = url
+        return {"web": {"results": [
+            {"title": "제목A", "url": "https://a.example", "description": "설명 &amp; A"},
+            {"title": "제목B", "url": "https://b.example", "description": "설명 B"},
+        ]}}
+
+    orig = agent._http_get_json
+    agent._http_get_json = fake_get_json
+    try:
+        out = agent.web_search("anthropic claude", count=2)
+        assert "제목A" in out and "https://a.example" in out
+        assert "설명 & A" in out  # HTML 엔티티 unescape
+        assert "q=anthropic" in captured["url"] and "count=2" in captured["url"]
+
+        # 결과 없음
+        agent._http_get_json = lambda url, headers, timeout: {"web": {"results": []}}
+        assert agent.web_search("zzz") == "(검색 결과 없음)"
+
+        # count 클램프 (>10 -> 10)
+        agent._http_get_json = fake_get_json
+        agent.web_search("x", count=99)
+        assert "count=10" in captured["url"]
+    finally:
+        agent._http_get_json = orig
+    print("PASS: web_search (결과 포맷 / unescape / 결과없음 / count 클램프)")
+
+
 def test_unknown_tool():
     assert "알 수 없는" in agent.execute_tool("nope", {})
     print("PASS: 미지의 툴 디스패치")
@@ -448,6 +479,7 @@ if __name__ == "__main__":
     test_bash()
     test_grep()
     test_glob()
+    test_web_search()
     test_unknown_tool()
     test_agent_loop_with_read_file()
     test_session_serialize()

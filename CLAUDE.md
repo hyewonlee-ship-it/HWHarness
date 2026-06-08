@@ -36,7 +36,7 @@ Do not pass `base_url=` with a hardcoded URL literal in code — the PostToolUse
   - `end_turn` → extract final text and return.
   - `tool_use` → run every called tool, append results as one `user` message, continue. Each `tool_result.tool_use_id` must match the originating `tool_use` block's id.
   - `pause_turn` → re-send unchanged to let a server-side tool continue.
-- **Tools**: declared in `TOOLS` (JSON schema); dispatched by name in `execute_tool()`. Add a new tool by extending both. Current tools: `read_file`, `write_file`, `bash` (30s timeout + dangerous-command blocklist), `grep` (regex over file contents), `glob` (filename patterns).
+- **Tools**: declared in `TOOLS` (JSON schema); dispatched by name in `execute_tool()`. Add a new tool by extending both. Current tools: `read_file`, `write_file`, `bash` (30s timeout + dangerous-command blocklist), `grep` (regex over file contents), `glob` (filename patterns), `web_search` (company proxy's Brave endpoint at `PROXY_ROOT/brave/v1/web/search`).
 
 ## Session management (`session.py`)
 

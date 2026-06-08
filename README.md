@@ -28,7 +28,7 @@ python tests/test_agent_loop.py  # 단위 테스트 (네트워크 불필요)
 
 | 파일 | 역할 |
 |---|---|
-| `agent.py` | 에이전트 루프 + 5개 툴 + 세션/컨텍스트/스킬 통합. 진입점. |
+| `agent.py` | 에이전트 루프 + 6개 툴 + 세션/컨텍스트/스킬 통합. 진입점. |
 | `session.py` | 세션 저장/로드/이어받기(JSON) + `progress.txt` |
 | `context.py` | 컨텍스트 관리 — Compaction(요약) + Stripping(툴 결과 제거) |
 | `skills.py` | 구조화 시스템 프롬프트 빌더 + 키워드 기반 스킬 로더 |
@@ -39,9 +39,9 @@ python tests/test_agent_loop.py  # 단위 테스트 (네트워크 불필요)
 
 `messages` 히스토리를 누적하며 `stop_reason` 으로 분기한다: `end_turn` → 종료, `tool_use` → 툴 실행 후 결과 반환, `pause_turn` → 재전송. 매 호출 전 컨텍스트 관리를 수행한다.
 
-### 툴 (5종)
+### 툴 (6종)
 
-`read_file` · `write_file`(디렉토리 자동 생성) · `bash`(30s 타임아웃 + 위험 커맨드 차단) · `grep`(정규식, 재귀) · `glob`(`**` 재귀 패턴). `TOOLS`(스키마)와 `execute_tool`(디스패치) 두 곳에 정의.
+`read_file` · `write_file`(디렉토리 자동 생성) · `bash`(30s 타임아웃 + 위험 커맨드 차단) · `grep`(정규식, 재귀) · `glob`(`**` 재귀 패턴) · `web_search`(회사 프록시의 Brave 검색 엔드포인트). `TOOLS`(스키마)와 `execute_tool`(디스패치) 두 곳에 정의.
 
 ### 세션 관리
 
