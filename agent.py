@@ -1,18 +1,21 @@
-"""기본 agent loop — 1단계.
+"""에이전트 루프 + 파일 툴 — 2단계.
 
-messages 히스토리를 누적하며 stop_reason 으로 분기하는 while 루프.
+read_file / write_file / bash / grep / glob 5종 툴을 붙였다.
 회사 AI 프록시 pass-through 로 연동한다 (Authorization: Bearer).
 """
 
+import fnmatch
+import glob as globlib
 import json
 import os
+import re
+import subprocess
 
 import anthropic
 
 MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 16000
 
-# 인증/엔드포인트는 환경변수로 주입 (코드에 토큰·URL 하드코딩 금지)
 PROXY_URL = os.environ.get("ANTHROPIC_BASE_URL")
 PROXY_TOKEN = os.environ.get("ANTHROPIC_AUTH_TOKEN")
 if not PROXY_URL or not PROXY_TOKEN:
@@ -21,24 +24,202 @@ if not PROXY_URL or not PROXY_TOKEN:
 client = anthropic.Anthropic(base_url=PROXY_URL, auth_token=PROXY_TOKEN)
 
 
-# ---- 툴 정의 (샘플) --------------------------------------------------------
+# ---- 툴 정의 ---------------------------------------------------------------
 
 TOOLS = [
     {
-        "name": "get_weather",
-        "description": "주어진 도시의 현재 날씨를 조회한다.",
+        "name": "read_file",
+        "description": "로컬 파일을 읽어 텍스트 내용을 반환한다. 실패 시 에러 메시지 반환.",
         "input_schema": {
             "type": "object",
-            "properties": {"city": {"type": "string", "description": "도시 이름"}},
-            "required": ["city"],
+            "properties": {"path": {"type": "string", "description": "읽을 파일 경로"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "텍스트를 파일에 쓴다. 상위 디렉토리가 없으면 자동 생성한다.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "쓸 파일 경로"},
+                "content": {"type": "string", "description": "파일에 쓸 내용"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "bash",
+        "description": "셸 커맨드를 실행하고 종료코드·stdout·stderr 를 반환한다. 타임아웃 30초. 위험 커맨드 차단.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"command": {"type": "string", "description": "실행할 셸 커맨드"}},
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "파일 내용에서 정규식을 검색해 'path:줄번호: 내용' 으로 반환한다.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "검색할 정규식"},
+                "path": {"type": "string", "description": "대상 파일/디렉토리 (기본: 현재)"},
+                "glob": {"type": "string", "description": "파일명 필터 (예: *.py). 선택."},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "glob",
+        "description": "파일명 패턴으로 파일 목록을 검색한다. ** 재귀 매칭 지원.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "glob 패턴 (예: **/*.py)"},
+                "path": {"type": "string", "description": "검색 기준 디렉토리 (기본: 현재)"},
+            },
+            "required": ["pattern"],
         },
     },
 ]
 
 
+def read_file(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return f"Error: 파일을 찾을 수 없습니다: {path}"
+    except IsADirectoryError:
+        return f"Error: 디렉토리입니다: {path}"
+    except UnicodeDecodeError:
+        return f"Error: 텍스트로 디코딩할 수 없습니다: {path}"
+    except OSError as exc:
+        return f"Error: 읽기 실패: {path} ({exc})"
+
+
+def write_file(path: str, content: str) -> str:
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return f"OK: {len(content)}자를 {path} 에 썼습니다."
+    except OSError as exc:
+        return f"Error: 쓰기 실패: {path} ({exc})"
+
+
+BASH_TIMEOUT = 30
+DANGEROUS_PATTERNS = [
+    (r"\brm\b[^\n|;&]*-[a-zA-Z]*[rf]", "rm -r/-f"),
+    (r"\bsudo\b", "sudo"),
+    (r"(^|[\s;&|])su\b", "su"),
+    (r"\b(shutdown|reboot|halt|poweroff|init)\b", "시스템 종료/재부팅"),
+    (r"\bmkfs\b", "mkfs"),
+    (r"\bdd\b[^\n]*\bof=", "dd of="),
+    (r">\s*/dev/[sh]d", "/dev 덮어쓰기"),
+    (r":\s*\(\s*\)\s*\{", "fork bomb"),
+    (r"\bchmod\b[^\n]*-R[^\n]*\s/(?:\s|$)", "chmod -R /"),
+    (r"(curl|wget)\b[^\n]*\|\s*(sudo\s+)?(ba)?sh", "원격 스크립트 파이프 실행"),
+    (r"\bmv\b[^\n]*\s/(?:\s|$)", "루트로 이동"),
+]
+
+
+def _blocked_reason(command: str):
+    for pattern, reason in DANGEROUS_PATTERNS:
+        if re.search(pattern, command):
+            return reason
+    return None
+
+
+def run_bash(command: str, timeout: int = BASH_TIMEOUT) -> str:
+    reason = _blocked_reason(command)
+    if reason:
+        return f"Error: 위험한 커맨드로 차단됨 [{reason}]: {command}"
+    try:
+        proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return f"Error: 타임아웃({timeout}s) 초과: {command}"
+    out = [f"[exit] {proc.returncode}"]
+    if proc.stdout:
+        out.append(f"[stdout]\n{proc.stdout.rstrip()}")
+    if proc.stderr:
+        out.append(f"[stderr]\n{proc.stderr.rstrip()}")
+    return "\n".join(out)
+
+
+GREP_MAX_MATCHES = 200
+GREP_SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".mypy_cache"}
+
+
+def grep(pattern: str, path: str = ".", glob: str = None) -> str:
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        return f"Error: 잘못된 정규식: {pattern} ({exc})"
+    if not os.path.exists(path):
+        return f"Error: 경로를 찾을 수 없습니다: {path}"
+    if os.path.isfile(path):
+        files = [path]
+    else:
+        files = []
+        for root, dirs, names in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in GREP_SKIP_DIRS]
+            for n in names:
+                if glob and not fnmatch.fnmatch(n, glob):
+                    continue
+                files.append(os.path.join(root, n))
+    matches = []
+    truncated = False
+    for fp in files:
+        try:
+            with open(fp, encoding="utf-8") as f:
+                for lineno, line in enumerate(f, 1):
+                    if regex.search(line):
+                        matches.append(f"{fp}:{lineno}: {line.rstrip()}")
+                        if len(matches) >= GREP_MAX_MATCHES:
+                            truncated = True
+                            break
+        except (OSError, UnicodeDecodeError):
+            continue
+        if truncated:
+            break
+    if not matches:
+        return "(매치 없음)"
+    result = "\n".join(matches)
+    if truncated:
+        result += f"\n... (상위 {GREP_MAX_MATCHES}개만 표시, 잘림)"
+    return result
+
+
+GLOB_MAX_RESULTS = 500
+
+
+def glob_files(pattern: str, path: str = ".") -> str:
+    full = pattern if os.path.isabs(pattern) else os.path.join(path, pattern)
+    matches = sorted(p for p in globlib.glob(full, recursive=True))
+    if not matches:
+        return "(매치 없음)"
+    shown = matches[:GLOB_MAX_RESULTS]
+    result = "\n".join(shown)
+    if len(matches) > GLOB_MAX_RESULTS:
+        result += f"\n... (상위 {GLOB_MAX_RESULTS}개만 표시, 총 {len(matches)}개)"
+    return result
+
+
 def execute_tool(name: str, tool_input: dict) -> str:
-    if name == "get_weather":
-        return f"{tool_input['city']}은(는) 맑음, 22°C"
+    if name == "read_file":
+        return read_file(tool_input["path"])
+    if name == "write_file":
+        return write_file(tool_input["path"], tool_input["content"])
+    if name == "bash":
+        return run_bash(tool_input["command"])
+    if name == "grep":
+        return grep(tool_input["pattern"], tool_input.get("path", "."), tool_input.get("glob"))
+    if name == "glob":
+        return glob_files(tool_input["pattern"], tool_input.get("path", "."))
     return f"알 수 없는 툴: {name}"
 
 
@@ -62,7 +243,7 @@ def run_agent(user_input: str) -> str:
             for block in response.content:
                 if block.type == "tool_use":
                     result = execute_tool(block.name, block.input)
-                    print(f"[tool] {block.name} -> {result}")
+                    print(f"[tool] {block.name}({json.dumps(block.input, ensure_ascii=False)}) -> {result}")
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": block.id,
@@ -74,4 +255,4 @@ def run_agent(user_input: str) -> str:
 
 
 if __name__ == "__main__":
-    print(run_agent("서울 날씨 알려줘"))
+    print(run_agent("현재 디렉토리의 .py 파일을 찾아 함수 목록을 뽑아줘."))
