@@ -84,7 +84,7 @@
 
 **④ `stop_reason` 분기**
 - `end_turn` → 응답에서 텍스트를 뽑아 **return** (루프 종료).
-- `tool_use` → 모든 `tool_use` 블록을 `execute_tool` 로 실행, 각 결과를 `_make_tool_result()` 로 묶어(같은 `tool_use_id`, 실패하면 `is_error: True`) **한 user 메시지**로 append → `continue`. `is_error` 는 모델에게 "이 호출은 실패"를 명시해 복구를 돕는다 (툴 수행 실패에만 표시하며, `bash` 의 0 아닌 종료코드는 내용으로 전달).
+- `tool_use` → 각 `tool_use` 블록을 실행. `REQUIRES_APPROVAL`(예: `bash`) 툴은 `approve(name, input)` 콜백으로 **실행 전 승인**받고(거부 시 미실행+에러 결과 — human-in-the-loop), 결과를 `_make_tool_result()` 로 묶어(같은 `tool_use_id`, 실패하면 `is_error: True`) **한 user 메시지**로 append → `continue`. 콜백은 프론트엔드가 주입(CLI=y/N 프롬프트, 웹/테스트=미주입 시 자동 실행). `is_error` 는 모델에게 "이 호출은 실패"를 명시해 복구를 돕는다 (툴 수행 실패에만 표시하며, `bash` 의 0 아닌 종료코드는 내용으로 전달).
 - `pause_turn` → 서버사이드 툴 이어가기 위해 그대로 재전송 → `continue`.
 - 그 외(max_tokens, refusal 등) → 예외.
 

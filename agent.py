@@ -28,6 +28,7 @@ from skills import build_system_prompt, load_relevant_skills
 MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 16000
 MAX_TURNS = 25  # 한 작업에서 허용할 최대 모델 호출(턴) 수 — 무한 루프/폭주 방지
+REQUIRES_APPROVAL = {"bash"}  # 실행 전 사용자 승인이 필요한 툴 (human-in-the-loop)
 
 def _load_dotenv(path=".env"):
     """의존성 없이 .env 파일을 읽어 환경변수로 로드한다 (이미 설정된 값은 유지)."""
@@ -403,11 +404,21 @@ def _final_wrapup(messages: list, system: str = None) -> str:
     return text or f"[최대 턴({MAX_TURNS}) 초과 — 마무리 응답 없음]"
 
 
-def run_agent(user_input: str, messages: list = None, system: str = None, session=None) -> str:
+def cli_approve(name: str, tool_input: dict) -> bool:
+    """터미널에서 y/N 로 툴 실행을 승인받는 콜백 (CLI/chat 용)."""
+    print(f"\n[승인 요청] 툴 '{name}' 실행:")
+    print("  " + json.dumps(tool_input, ensure_ascii=False))
+    return input("  실행할까요? [y/N] ").strip().lower() in ("y", "yes")
+
+
+def run_agent(user_input: str, messages: list = None, system: str = None, session=None,
+              approve=None) -> str:
     """한 작업을 수행한다. messages 를 넘기면 그 히스토리를 이어서(in-place) 누적한다.
 
     messages=None 이면 새 리스트로 시작. system 이 있으면 시스템 프롬프트로 전달.
     session 을 넘기면 컨텍스트 압축 발생 시 compaction_count 를 증가시킨다.
+    approve(tool명, 입력)->bool 콜백을 넘기면 REQUIRES_APPROVAL 툴은 실행 전 확인받는다.
+    (None 이면 게이트 없이 자동 실행 — 웹/테스트 기본값)
     """
     if messages is None:
         messages = []
@@ -455,7 +466,11 @@ def run_agent(user_input: str, messages: list = None, system: str = None, sessio
             tool_results = []
             for block in response.content:
                 if block.type == "tool_use":
-                    result = execute_tool(block.name, block.input)
+                    # 승인 게이트: 위험 툴은 실행 전 사용자 확인. 거부 시 실행 안 하고 에러로 알림.
+                    if block.name in REQUIRES_APPROVAL and approve is not None and not approve(block.name, block.input):
+                        result = "Error: 사용자가 실행을 거부했습니다."
+                    else:
+                        result = execute_tool(block.name, block.input)
                     tr = _make_tool_result(block.id, result)  # tool_use_id 매칭 + is_error 판정
                     mark = "실패" if tr.get("is_error") else "ok"
                     print(f"[tool:{mark}] {block.name}({json.dumps(block.input, ensure_ascii=False)}) -> {result}")
@@ -480,7 +495,7 @@ DEFAULT_OUTPUT_FORMAT = "작업 결과를 한국어로 간결하게 요약한다
 
 
 def run_session(task: str, session_id: str = None, base_dir: str = "sessions",
-                skills_dir: str = "skills"):
+                skills_dir: str = "skills", approve=None):
     """세션을 이어받거나 새로 만들어 한 작업을 수행하고, 히스토리·progress 를 저장한다.
 
     구조화된 시스템 프롬프트(ROLE/ENVIRONMENT/TASK CONTEXT/RULES/OUTPUT FORMAT/SKILLS)를
@@ -505,7 +520,7 @@ def run_session(task: str, session_id: str = None, base_dir: str = "sessions",
     )
     session.system_prompt = system  # 기록용
 
-    answer = run_agent(task, messages=session.messages, system=system, session=session)
+    answer = run_agent(task, messages=session.messages, system=system, session=session, approve=approve)
 
     # 토큰 수 대략 추정(문자/4) — 정확한 카운팅/컴팩션은 4단계에서
     session.token_count = len(json.dumps(serialize_messages(session.messages), ensure_ascii=False)) // 4

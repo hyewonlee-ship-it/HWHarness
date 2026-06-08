@@ -299,6 +299,50 @@ def test_is_error_propagation():
     print("PASS: is_error 전파 (실패 툴 결과에 is_error=True)")
 
 
+def test_approval_gate():
+    # bash 를 호출하는 응답 -> 그 다음 end_turn
+    def make_seq():
+        return iter([
+            SimpleNamespace(stop_reason="tool_use", content=[
+                block(type="tool_use", id="tb", name="bash", input={"command": "echo hi"})]),
+            SimpleNamespace(stop_reason="end_turn", content=[block(type="text", text="끝")]),
+        ])
+
+    def run_with(approve_fn, executed):
+        seq = make_seq()
+
+        def fake_create(*, model, max_tokens, messages, tools=None, system=None):
+            return next(seq)
+
+        # 실제 bash 실행 여부를 감지하기 위해 run_bash 를 가로챈다
+        orig_create, orig_bash = agent.client.messages.create, agent.run_bash
+        agent.client.messages.create = fake_create
+        agent.run_bash = lambda cmd, timeout=30: executed.append(cmd) or "[exit] 0"
+        msgs = []
+        try:
+            agent.run_agent("echo 해줘", messages=msgs, approve=approve_fn)
+        finally:
+            agent.client.messages.create = orig_create
+            agent.run_bash = orig_bash
+        trs = [b for m in msgs if m["role"] == "user" and isinstance(m["content"], list)
+               for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result"]
+        return trs[0]
+
+    # 거부: bash 실행 안 됨 + is_error
+    executed = []
+    tr = run_with(lambda name, inp: False, executed)
+    assert executed == [], executed
+    assert tr.get("is_error") is True and "거부" in tr["content"]
+
+    # 승인: bash 실행됨
+    executed = []
+    tr = run_with(lambda name, inp: True, executed)
+    assert executed == ["echo hi"], executed
+    assert tr.get("is_error") is None
+
+    print("PASS: 승인 게이트 (거부 시 미실행+is_error / 승인 시 실행)")
+
+
 # ---- 세션 관리 (3단계) ----------------------------------------------------
 
 import session as sessmod  # noqa: E402
@@ -541,6 +585,7 @@ if __name__ == "__main__":
     test_unknown_tool()
     test_max_turns_guard()
     test_is_error_propagation()
+    test_approval_gate()
     test_agent_loop_with_read_file()
     test_session_serialize()
     test_session_save_load_resume_progress()
