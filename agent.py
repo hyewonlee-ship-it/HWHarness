@@ -13,6 +13,7 @@ import subprocess
 
 import anthropic
 
+from context import manage_context
 from session import SessionManager, serialize_messages
 
 MODEL = "claude-haiku-4-5"
@@ -227,13 +228,41 @@ def execute_tool(name: str, tool_input: dict) -> str:
 
 # ---- agent loop ------------------------------------------------------------
 
-def run_agent(user_input: str, messages: list = None, system: str = None) -> str:
-    """messages 를 넘기면 그 히스토리를 이어서(in-place) 누적한다. system 은 시스템 프롬프트."""
+def _summarize(conversation_text: str) -> str:
+    """오래된 대화를 압축 요약 (툴 없이 모델 1회 호출). 컨텍스트 관리용."""
+    resp = client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        messages=[{
+            "role": "user",
+            "content": (
+                "다음 대화를 압축 요약하세요.\n"
+                "보존: 아키텍처/설계 결정, 미완성 작업, 에러 상태, 중요한 파일 경로.\n"
+                "버릴 것: 반복되는 툴 출력, 중간 확인 메시지.\n\n" + conversation_text
+            ),
+        }],
+    )
+    return next((b.text for b in resp.content if b.type == "text"), "")
+
+
+def run_agent(user_input: str, messages: list = None, system: str = None, session=None) -> str:
+    """messages 를 넘기면 그 히스토리를 이어서(in-place) 누적한다. system 은 시스템 프롬프트.
+
+    session 을 넘기면 컨텍스트 압축 발생 시 compaction_count 를 증가시킨다.
+    """
     if messages is None:
         messages = []
     messages.append({"role": "user", "content": user_input})
 
     while True:
+        # 매 호출 전 컨텍스트 관리: 70% 초과 시 stripping -> compaction
+        managed, did = manage_context(messages, _summarize)
+        if did:
+            messages[:] = managed
+            if session is not None:
+                session.compaction_count += 1
+            print(f"[context] 컨텍스트 관리 수행 (현재 메시지 {len(messages)}개)")
+
         kwargs = {"model": MODEL, "max_tokens": MAX_TOKENS, "tools": TOOLS, "messages": messages}
         if system:
             kwargs["system"] = system
@@ -278,7 +307,7 @@ def run_session(task: str, session_id: str = None, base_dir: str = "sessions"):
     if prior:
         system += f"\n\n[이전 세션 진행 기록 — 이어서 작업하세요]\n{prior}"
 
-    answer = run_agent(task, messages=session.messages, system=system)
+    answer = run_agent(task, messages=session.messages, system=system, session=session)
     session.token_count = len(json.dumps(serialize_messages(session.messages), ensure_ascii=False)) // 4
     mgr.save(session)
     mgr.append_progress(session, f"[작업] {task}\n[결과] {answer}")
