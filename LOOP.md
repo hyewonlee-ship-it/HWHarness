@@ -78,7 +78,7 @@
   - 그래도 초과면 `compact_context()`: 오래된 부분을 Haiku 로 요약(`_summarize`)하고 `[요약] + 최근 tail` 로 교체. tail 은 항상 "깨끗한 경계"(문자열 user 턴)에서 시작 → 떠도는 `tool_result` 방지.
 - 압축이 일어나면 `session.compaction_count += 1`.
 
-**② 모델 호출** — `client.messages.create(model, max_tokens, tools, messages, system)` → 프록시 → Anthropic.
+**② 모델 호출** — `client.messages.create(model, max_tokens, tools, messages, system)` → 프록시 → Anthropic. `tool_choice` 를 넘기면 **첫 턴에만** 강제(`any`/특정 툴)한다 — 매 턴 강제하면 `end_turn` 이 안 와 마무리를 못 하므로 `turns == 1` 에서만 적용한다.
 
 **③ 히스토리 누적** — `messages += {assistant: response.content}`. 텍스트만이 아니라 **`tool_use` 블록을 포함한 content 전체**를 넣는다 (안 그러면 다음 요청이 깨진다).
 

@@ -343,6 +343,30 @@ def test_approval_gate():
     print("PASS: 승인 게이트 (거부 시 미실행+is_error / 승인 시 실행)")
 
 
+def test_tool_choice_first_turn_only():
+    seen = []  # 각 create 호출에 전달된 tool_choice 기록
+    seq = iter([
+        SimpleNamespace(stop_reason="tool_use", content=[
+            block(type="tool_use", id="t1", name="read_file", input={"path": "__nope__"})]),  # turn1
+        SimpleNamespace(stop_reason="end_turn", content=[block(type="text", text="끝")]),       # turn2
+    ])
+
+    def fake_create(*, model, max_tokens, tools, messages, system=None, tool_choice=None):
+        seen.append(tool_choice)
+        return next(seq)
+
+    orig = agent.client.messages.create
+    agent.client.messages.create = fake_create
+    try:
+        agent.run_agent("검색부터 해", tool_choice={"type": "tool", "name": "web_search"})
+    finally:
+        agent.client.messages.create = orig
+
+    assert seen[0] == {"type": "tool", "name": "web_search"}, seen  # 첫 턴: 강제
+    assert seen[1] is None, seen                                    # 이후 턴: auto (강제 해제)
+    print("PASS: tool_choice 강제 (첫 턴만 적용, 이후 auto)")
+
+
 # ---- 세션 관리 (3단계) ----------------------------------------------------
 
 import session as sessmod  # noqa: E402
@@ -586,6 +610,7 @@ if __name__ == "__main__":
     test_max_turns_guard()
     test_is_error_propagation()
     test_approval_gate()
+    test_tool_choice_first_turn_only()
     test_agent_loop_with_read_file()
     test_session_serialize()
     test_session_save_load_resume_progress()
