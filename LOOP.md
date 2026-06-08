@@ -70,6 +70,8 @@
 
 `messages` 에 user 작업을 넣고 `while True` 진입. 매 반복:
 
+**⓪ 턴 상한 가드** — 루프 한 바퀴 = 모델 호출 1번. `turns > MAX_TURNS`(기본 25)면 폭주 방지로 중단하되, 무뚝뚝하게 끊지 않고 `_final_wrapup()` 으로 **툴 없이 한 번 더 호출**해 모델이 지금까지 결과로 마무리하게 한다 (종료는 모델이 아니라 하네스가 통제).
+
 **① 컨텍스트 관리** — `manage_context(messages, _summarize)` (`context.py`)
 - `estimate_tokens` 가 200K 의 70% 를 넘으면:
   - 먼저 `strip_old_tool_results()`: 오래된 `tool_result` **내용만** placeholder 로 치환 (블록·`tool_use_id` 는 보존 → 짝 무결성 유지).
@@ -82,7 +84,7 @@
 
 **④ `stop_reason` 분기**
 - `end_turn` → 응답에서 텍스트를 뽑아 **return** (루프 종료).
-- `tool_use` → 모든 `tool_use` 블록을 `execute_tool` 로 실행, 각 결과를 `tool_result`(같은 `tool_use_id`)로 묶어 **한 user 메시지**로 append → `continue`.
+- `tool_use` → 모든 `tool_use` 블록을 `execute_tool` 로 실행, 각 결과를 `_make_tool_result()` 로 묶어(같은 `tool_use_id`, 실패하면 `is_error: True`) **한 user 메시지**로 append → `continue`. `is_error` 는 모델에게 "이 호출은 실패"를 명시해 복구를 돕는다 (툴 수행 실패에만 표시하며, `bash` 의 0 아닌 종료코드는 내용으로 전달).
 - `pause_turn` → 서버사이드 툴 이어가기 위해 그대로 재전송 → `continue`.
 - 그 외(max_tokens, refusal 등) → 예외.
 

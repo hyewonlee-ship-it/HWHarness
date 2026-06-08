@@ -241,6 +241,64 @@ def test_unknown_tool():
     print("PASS: 미지의 툴 디스패치")
 
 
+def test_max_turns_guard():
+    # mock: 툴이 주어지면 무조건 tool_use(끝없음), 툴 없이 오면(마무리 호출) end_turn+텍스트
+    calls = {"n": 0}
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None):
+        calls["n"] += 1
+        if not tools:  # _final_wrapup 의 마무리 호출 (tools 없이)
+            return SimpleNamespace(stop_reason="end_turn",
+                                   content=[block(type="text", text="지금까지 결과로 마무리합니다.")])
+        return SimpleNamespace(stop_reason="tool_use", content=[
+            block(type="tool_use", id=f"t{calls['n']}", name="read_file",
+                  input={"path": "__no_such_file__"}),
+        ])
+
+    orig = agent.client.messages.create
+    agent.client.messages.create = fake_create
+    try:
+        result = agent.run_agent("끝없이 툴을 부르게 해줘")  # 가드 없으면 여기서 영원히 멈춤
+    finally:
+        agent.client.messages.create = orig
+
+    # 우아한 마무리: 무뚝뚝한 중단이 아니라 모델이 정리한 최종 텍스트가 와야 함
+    assert result == "지금까지 결과로 마무리합니다.", result
+    # 툴 턴 MAX_TURNS 회 + 마무리 호출 1회
+    assert calls["n"] == agent.MAX_TURNS + 1, calls["n"]
+    print(f"PASS: max_turns 우아한 마무리 (툴 {agent.MAX_TURNS}턴 + 마무리 1회, 최종 텍스트 반환)")
+
+
+def test_is_error_propagation():
+    # 헬퍼 단위: 에러 규약('Error:') -> is_error=True, 정상 -> 플래그 없음
+    assert agent._make_tool_result("id1", "Error: 없음").get("is_error") is True
+    assert "is_error" not in agent._make_tool_result("id2", "정상 결과")
+
+    # 통합: 실패하는 툴(없는 파일 read_file)의 결과가 is_error=True 로 모델에 전달되는지
+    seq = iter([
+        SimpleNamespace(stop_reason="tool_use", content=[
+            block(type="tool_use", id="terr", name="read_file", input={"path": "__nope__"})]),
+        SimpleNamespace(stop_reason="end_turn", content=[block(type="text", text="확인했습니다")]),
+    ])
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None):
+        return next(seq)
+
+    orig = agent.client.messages.create
+    agent.client.messages.create = fake_create
+    msgs = []
+    try:
+        agent.run_agent("없는 파일 읽어줘", messages=msgs)
+    finally:
+        agent.client.messages.create = orig
+
+    trs = [b for m in msgs if m["role"] == "user" and isinstance(m["content"], list)
+           for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result"]
+    assert len(trs) == 1 and trs[0]["is_error"] is True, trs
+    assert trs[0]["content"].startswith("Error:")
+    print("PASS: is_error 전파 (실패 툴 결과에 is_error=True)")
+
+
 # ---- 세션 관리 (3단계) ----------------------------------------------------
 
 import session as sessmod  # noqa: E402
@@ -481,6 +539,8 @@ if __name__ == "__main__":
     test_glob()
     test_web_search()
     test_unknown_tool()
+    test_max_turns_guard()
+    test_is_error_propagation()
     test_agent_loop_with_read_file()
     test_session_serialize()
     test_session_save_load_resume_progress()

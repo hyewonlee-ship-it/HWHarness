@@ -27,6 +27,7 @@ from skills import build_system_prompt, load_relevant_skills
 
 MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 16000
+MAX_TURNS = 25  # 한 작업에서 허용할 최대 모델 호출(턴) 수 — 무한 루프/폭주 방지
 
 def _load_dotenv(path=".env"):
     """의존성 없이 .env 파일을 읽어 환경변수로 로드한다 (이미 설정된 값은 유지)."""
@@ -348,6 +349,19 @@ def execute_tool(name: str, tool_input: dict) -> str:
     return f"알 수 없는 툴: {name}"
 
 
+def _make_tool_result(tool_use_id: str, result: str) -> dict:
+    """tool_result 블록 생성. 툴의 에러 규약('Error:' 접두사)이면 is_error 를 표시한다.
+
+    우리 툴은 실패 시 'Error: ...' 문자열을 반환하기로 약속(컨벤션)했다. is_error=True 면
+    모델이 "이 호출은 실패"임을 명확히 인식해 다른 방식으로 복구한다.
+    (더 견고하게 하려면 execute_tool 이 (내용, 실패여부)를 명시적으로 돌려주게 바꾸면 된다.)
+    """
+    block = {"type": "tool_result", "tool_use_id": tool_use_id, "content": result}
+    if result.startswith("Error:"):
+        block["is_error"] = True
+    return block
+
+
 # ---- agent loop ------------------------------------------------------------
 
 def _summarize(conversation_text: str) -> str:
@@ -367,6 +381,28 @@ def _summarize(conversation_text: str) -> str:
     return next((b.text for b in resp.content if b.type == "text"), "")
 
 
+def _final_wrapup(messages: list, system: str = None) -> str:
+    """턴 상한에 도달했을 때, 툴 없이 한 번 더 호출해 모델이 마무리하게 한다.
+
+    tools 를 빼면 모델은 더 툴을 못 부르고 텍스트로 마무리할 수밖에 없다.
+    "이제 마무리하라"는 user 메시지로 방향을 잡아준다.
+    """
+    messages.append({
+        "role": "user",
+        "content": (
+            "툴 사용 한도에 도달했습니다. 더 이상 툴을 호출하지 말고, "
+            "지금까지 확인한 내용만으로 최종 답변을 정리해 주세요."
+        ),
+    })
+    kwargs = {"model": MODEL, "max_tokens": MAX_TOKENS, "messages": messages}  # tools 없음!
+    if system:
+        kwargs["system"] = system
+    response = client.messages.create(**kwargs)
+    messages.append({"role": "assistant", "content": response.content})
+    text = next((b.text for b in response.content if b.type == "text"), "")
+    return text or f"[최대 턴({MAX_TURNS}) 초과 — 마무리 응답 없음]"
+
+
 def run_agent(user_input: str, messages: list = None, system: str = None, session=None) -> str:
     """한 작업을 수행한다. messages 를 넘기면 그 히스토리를 이어서(in-place) 누적한다.
 
@@ -377,7 +413,14 @@ def run_agent(user_input: str, messages: list = None, system: str = None, sessio
         messages = []
     messages.append({"role": "user", "content": user_input})
 
+    turns = 0
     while True:
+        # 안전장치: 루프 한 바퀴 = 모델 호출 1번. 상한 초과 시 폭주 방지로 중단.
+        turns += 1
+        if turns > MAX_TURNS:
+            # 무뚝뚝하게 끊지 않고, 툴 없이 한 번 더 호출해 우아하게 마무리시킨다.
+            return _final_wrapup(messages, system)
+
         # 매 호출 전 컨텍스트 관리: 70% 초과 시 stripping -> compaction
         managed, did = manage_context(messages, _summarize)
         if did:
@@ -413,12 +456,10 @@ def run_agent(user_input: str, messages: list = None, system: str = None, sessio
             for block in response.content:
                 if block.type == "tool_use":
                     result = execute_tool(block.name, block.input)
-                    print(f"[tool] {block.name}({json.dumps(block.input, ensure_ascii=False)}) -> {result}")
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,  # tool_use 블록의 id와 반드시 일치
-                        "content": result,
-                    })
+                    tr = _make_tool_result(block.id, result)  # tool_use_id 매칭 + is_error 판정
+                    mark = "실패" if tr.get("is_error") else "ok"
+                    print(f"[tool:{mark}] {block.name}({json.dumps(block.input, ensure_ascii=False)}) -> {result}")
+                    tool_results.append(tr)
             messages.append({"role": "user", "content": tool_results})
             continue
 
