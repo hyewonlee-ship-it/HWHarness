@@ -1,0 +1,13 @@
+# 비밀값 — 절대 커밋 금지
+.env
+
+# 세션 데이터 (대화 히스토리 / progress)
+sessions/
+
+# 생성 산출물 (데모/작업 출력)
+result.txt
+test.txt
+
+# Python
+__pycache__/
+*.pyc
