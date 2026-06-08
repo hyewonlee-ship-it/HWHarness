@@ -1,6 +1,6 @@
-"""에이전트 루프 + 파일 툴 — 2단계.
+"""에이전트 루프 + 파일 툴 + 세션 관리 — 3단계.
 
-read_file / write_file / bash / grep / glob 5종 툴을 붙였다.
+read_file / write_file / bash / grep / glob 5종 툴 + session_id 기반 세션 저장/이어받기.
 회사 AI 프록시 pass-through 로 연동한다 (Authorization: Bearer).
 """
 
@@ -12,6 +12,8 @@ import re
 import subprocess
 
 import anthropic
+
+from session import SessionManager, serialize_messages
 
 MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 16000
@@ -225,13 +227,17 @@ def execute_tool(name: str, tool_input: dict) -> str:
 
 # ---- agent loop ------------------------------------------------------------
 
-def run_agent(user_input: str) -> str:
-    messages = [{"role": "user", "content": user_input}]
+def run_agent(user_input: str, messages: list = None, system: str = None) -> str:
+    """messages 를 넘기면 그 히스토리를 이어서(in-place) 누적한다. system 은 시스템 프롬프트."""
+    if messages is None:
+        messages = []
+    messages.append({"role": "user", "content": user_input})
 
     while True:
-        response = client.messages.create(
-            model=MODEL, max_tokens=MAX_TOKENS, tools=TOOLS, messages=messages,
-        )
+        kwargs = {"model": MODEL, "max_tokens": MAX_TOKENS, "tools": TOOLS, "messages": messages}
+        if system:
+            kwargs["system"] = system
+        response = client.messages.create(**kwargs)
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "end_turn":
@@ -254,5 +260,33 @@ def run_agent(user_input: str) -> str:
         raise RuntimeError(f"예상치 못한 stop_reason: {response.stop_reason}")
 
 
+# ---- 세션 기반 실행 --------------------------------------------------------
+
+DEFAULT_SYSTEM = (
+    "당신은 로컬 파일 시스템 작업을 돕는 에이전트입니다. "
+    "제공된 툴(read_file, write_file, bash, grep, glob)을 사용해 작업을 수행하세요."
+)
+
+
+def run_session(task: str, session_id: str = None, base_dir: str = "sessions"):
+    """세션을 이어받거나 새로 만들어 작업을 수행하고 히스토리·progress 를 저장한다."""
+    mgr = SessionManager(base_dir)
+    session = mgr.resume_or_new(session_id, system_prompt=DEFAULT_SYSTEM,
+                                tools=[t["name"] for t in TOOLS])
+    system = session.system_prompt
+    prior = mgr.read_progress(session)
+    if prior:
+        system += f"\n\n[이전 세션 진행 기록 — 이어서 작업하세요]\n{prior}"
+
+    answer = run_agent(task, messages=session.messages, system=system)
+    session.token_count = len(json.dumps(serialize_messages(session.messages), ensure_ascii=False)) // 4
+    mgr.save(session)
+    mgr.append_progress(session, f"[작업] {task}\n[결과] {answer}")
+    return session, answer
+
+
 if __name__ == "__main__":
-    print(run_agent("현재 디렉토리의 .py 파일을 찾아 함수 목록을 뽑아줘."))
+    session, answer = run_session(
+        "현재 디렉토리의 .py 파일을 찾아 함수 목록을 뽑아줘.", session_id="demo",
+    )
+    print(f"\n[session {session.session_id}] {answer}")
