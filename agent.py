@@ -40,7 +40,7 @@ _load_dotenv()
 
 # 회사 AI 프록시 pass-through 연동. 인증/엔드포인트는 모두 환경변수로 주입한다
 # (코드에 토큰·URL 하드코딩 금지). .env 파일이나 셸 export 로 설정:
-#   ANTHROPIC_BASE_URL="https://aiproxy-api.backoffice.bagelgames.com"  # 프록시 엔드포인트
+#   ANTHROPIC_BASE_URL="https://<company-proxy>"  # 프록시 엔드포인트
 #   ANTHROPIC_AUTH_TOKEN="<회사 AI 프록시 토큰>"                          # Authorization: Bearer 로 전송
 #
 # auth_token 을 쓰면 SDK 가 x-api-key 대신 Authorization: Bearer 헤더를 보낸다.

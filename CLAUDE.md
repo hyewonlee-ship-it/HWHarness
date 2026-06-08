@@ -20,7 +20,7 @@ python agent.py
 
 The client authenticates to the **company AI proxy** (a multi-provider gateway) with a Bearer token; the proxy passes the request through to Anthropic. Both values come from environment variables (via `.env` or shell export) — never hardcoded — and `agent.py` exits with a clear message if either is missing:
 
-- `ANTHROPIC_BASE_URL` — `https://aiproxy-api.backoffice.bagelgames.com/anthropic`. The `/anthropic` suffix is required: the SDK appends `/v1/messages`, so the real endpoint is `POST .../anthropic/v1/messages`. (The gateway also exposes `/openai/...`, `/google/...`, etc. — verify routes via its OpenAPI spec at `/api-json`.)
+- `ANTHROPIC_BASE_URL` — `https://<company-proxy>/anthropic`. The `/anthropic` suffix is required: the SDK appends `/v1/messages`, so the real endpoint is `POST .../anthropic/v1/messages`. (The gateway also exposes `/openai/...`, `/google/...`, etc. — verify routes via its OpenAPI spec at `/api-json`.)
 - `ANTHROPIC_AUTH_TOKEN` — the company AI proxy token (`aiproxy_...`). Constructed via `anthropic.Anthropic(base_url=..., auth_token=...)`, so the SDK sends `Authorization: Bearer <token>` instead of `x-api-key`.
 
 Do **not** set `ANTHROPIC_API_KEY` in proxy mode — if both `x-api-key` and `Authorization` headers are sent, the request may be rejected.

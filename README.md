@@ -19,7 +19,7 @@ python tests/test_agent_loop.py  # 단위 테스트 (네트워크 불필요)
 
 | 변수 | 값 |
 |---|---|
-| `ANTHROPIC_BASE_URL` | `https://aiproxy-api.backoffice.bagelgames.com/anthropic` |
+| `ANTHROPIC_BASE_URL` | `https://<company-proxy>/anthropic` |
 | `ANTHROPIC_AUTH_TOKEN` | 회사 AI 프록시 토큰 (`aiproxy_...`) |
 
 `anthropic.Anthropic(base_url=..., auth_token=...)` 로 구성하면 SDK 가 `Authorization: Bearer` 헤더로 프록시에 인증하고, 프록시가 네이티브 Anthropic `/v1/messages` 로 그대로 전달한다.

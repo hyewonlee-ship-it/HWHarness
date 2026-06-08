@@ -11,3 +11,9 @@ test.txt
 # Python
 __pycache__/
 *.pyc
+
+# macOS
+.DS_Store
+
+# 내부 가이드 문서 (공개 레포 제외)
+.docs/
