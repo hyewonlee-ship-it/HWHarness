@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(claude-api)",
+      "Skill(update-config)",
+      "Bash(python3 .claude/hooks/check_agent.py)",
+      "Bash(echo \"exit=$? \\(출력 없고 exit 0 이면 통과\\)\")",
+      "Bash(echo \"exit=$? \\(무시 정상\\)\")",
+      "Bash(rm -rf /tmp/hooktest)",
+      "Bash(python3 -m pip install --quiet anthropic)",
+      "Bash(python3 -c \"import anthropic; print\\('anthropic', anthropic.__version__\\)\")",
+      "Bash(python3 *)",
+      "Bash(echo \"hook exit=$?\")",
+      "Bash(git init *)",
+      "Bash(git config *)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'stage1: 기본 agent loop + 회사 프록시 pass-through 연동 *)",
+      "Bash(git commit -q -m 'stage2: 파일 툴 5종 추가 \\(read_file/write_file/bash/grep/glob\\) *)",
+      "Bash(git commit -q -m 'stage3: 세션 관리 \\(히스토리 저장/이어받기 + progress.txt\\) *)",
+      "Bash(git commit -q -m 'stage4: 컨텍스트 관리 \\(compaction + stripping\\) *)",
+      "Bash(git commit -q -m 'stage5: 시스템 프롬프트 구조화 + 스킬 로더 *)",
+      "Bash(git commit -q -m '마무리: 단위 테스트 + README + 데모 + 프로젝트 규칙 *)"
+    ]
+  }
+}
