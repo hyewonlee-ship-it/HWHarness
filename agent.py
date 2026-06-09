@@ -29,6 +29,8 @@ from skills import build_system_prompt, load_relevant_skills
 MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 16000
 MAX_TURNS = 25  # 한 작업에서 허용할 최대 모델 호출(턴) 수 — 무한 루프/폭주 방지
+CACHE_PROMPT = True    # 시스템 프롬프트(+툴)에 cache_control 적용 — 세션 내 고정 프리픽스 캐시
+CACHE_MESSAGES = True  # 매 턴 마지막 메시지 블록에 cache_control — 누적되는 대화 프리픽스를 캐시(멀티턴)
 REQUIRES_APPROVAL = {"bash"}  # 실행 전 사용자 승인이 필요한 툴 (human-in-the-loop)
 
 def _load_dotenv(path=".env"):
@@ -377,6 +379,35 @@ def _make_tool_result(tool_use_id: str, result: str, untrusted: bool = False) ->
     return block
 
 
+def _cache_messages(messages: list) -> list:
+    """마지막 메시지의 마지막 블록에 cache_control 을 달아 누적 대화 프리픽스를 캐시한다(멀티턴).
+
+    왜: agent 루프는 매 턴 system+tools+messages 전체를 재전송한다. 마지막 메시지에
+    브레이크포인트를 걸면 직전 턴까지의 누적 프리픽스(system+tools+이전 messages)를 캐시에서
+    읽는다 → 반복 입력 비용이 0.1× 로 떨어진다. 브레이크포인트는 매 턴 한 칸씩 뒤로 밀린다.
+
+    원본 messages 는 건드리지 않는다(마커가 히스토리에 누적되면 4개 한도 초과·세션 직렬화 오염).
+    요청용 얕은 복사본만 반환한다. 루프 진입 시 마지막 메시지는 항상 user(최초 입력 문자열
+    또는 tool_result dict 리스트)이므로 SDK 객체를 건드릴 일이 없다.
+    """
+    if not messages:
+        return messages
+    out = list(messages)
+    last = dict(out[-1])
+    content = last["content"]
+    mark = {"type": "ephemeral"}
+    if isinstance(content, str):
+        last["content"] = [{"type": "text", "text": content, "cache_control": mark}]
+    elif isinstance(content, list) and content and isinstance(content[-1], dict):
+        new_content = list(content)
+        new_content[-1] = {**content[-1], "cache_control": mark}
+        last["content"] = new_content
+    else:
+        return messages  # 마지막 블록이 SDK 객체 등 마킹 불가 형태면 캐싱 생략
+    out[-1] = last
+    return out
+
+
 # ---- agent loop ------------------------------------------------------------
 
 def _summarize(conversation_text: str) -> str:
@@ -468,10 +499,17 @@ def run_agent(user_input: str, messages: list = None, system: str = None, sessio
             "model": MODEL,
             "max_tokens": MAX_TOKENS,
             "tools": TOOLS,
-            "messages": messages,
+            # 멀티턴 캐싱: 마지막 메시지에 브레이크포인트를 달아 누적 프리픽스를 캐시에서 읽는다.
+            # 원본 messages 는 그대로 두고 요청용 복사본만 마킹한다.
+            "messages": _cache_messages(messages) if CACHE_MESSAGES else messages,
         }
         if system:
-            kwargs["system"] = system
+            if CACHE_PROMPT:
+                # cache_control 을 system 블록에 — tools 는 system 앞에 렌더되므로
+                # 이 한 브레이크포인트가 tools+system 프리픽스를 함께 캐시한다.
+                kwargs["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+            else:
+                kwargs["system"] = system
         if tool_choice and turns == 1:  # 강제는 첫 턴에만 — 이후 auto 로 풀어 마무리 가능하게
             kwargs["tool_choice"] = tool_choice
 

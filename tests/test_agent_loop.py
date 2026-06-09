@@ -35,6 +35,13 @@ def block(**kw):
     return _Block(**kw)
 
 
+def _sys_text(system):
+    """system 이 문자열이든 cache_control 블록 리스트든 텍스트를 반환 (캐싱 토글 대응)."""
+    if isinstance(system, list):
+        return "\n".join(b.get("text", "") for b in system)
+    return system or ""
+
+
 def make_scripted_create(captured, target_path):
     """create 호출마다 messages를 기록하고, 호출 순서대로 스크립트된 응답을 반환."""
     responses = [
@@ -304,6 +311,53 @@ def test_is_error_propagation():
     assert len(trs) == 1 and trs[0]["is_error"] is True, trs
     assert "Error:" in trs[0]["content"]  # read_file 외부툴 -> <tool_output> 래핑 안에 에러 포함
     print("PASS: is_error 전파 (실패 툴 결과에 is_error=True)")
+
+
+def test_cache_messages_marks_last_block_only():
+    # 문자열 content -> text 블록으로 감싸고 cache_control 부여
+    out = agent._cache_messages([{"role": "user", "content": "hi"}])
+    assert out[0]["content"][0]["text"] == "hi"
+    assert out[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+    # 리스트 content -> 마지막 블록에만 브레이크포인트
+    msgs = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "a", "content": "x"},
+            {"type": "tool_result", "tool_use_id": "b", "content": "y"},
+        ]},
+    ]
+    out = agent._cache_messages(msgs)
+    last = out[-1]["content"]
+    assert "cache_control" not in last[0]               # 앞 블록엔 안 붙음
+    assert last[-1]["cache_control"] == {"type": "ephemeral"}
+    assert isinstance(out[0]["content"], str)           # 이전 메시지는 그대로
+
+    # 원본 불변 (마커가 히스토리에 누적되면 4개 한도 초과/직렬화 오염)
+    assert msgs[-1]["content"][-1] == {"type": "tool_result", "tool_use_id": "b", "content": "y"}
+    assert "cache_control" not in str(msgs)
+    assert agent._cache_messages([]) == []              # 빈 히스토리는 그대로
+    print("PASS: _cache_messages 마지막 블록만 마킹 + 원본 불변")
+
+
+def test_cache_messages_wired_into_loop():
+    # run_agent 가 create 에 넘기는 messages 의 마지막 블록에 cache_control 이 실려가는지
+    captured = {}
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None, **kw):
+        captured["messages"] = messages
+        return SimpleNamespace(stop_reason="end_turn", content=[block(type="text", text="done")])
+
+    orig = agent.client.messages.create
+    agent.client.messages.create = fake_create
+    try:
+        assert agent.CACHE_MESSAGES is True
+        agent.run_agent("안녕")
+    finally:
+        agent.client.messages.create = orig
+    last = captured["messages"][-1]["content"]
+    assert isinstance(last, list) and last[-1]["cache_control"] == {"type": "ephemeral"}
+    print("PASS: 멀티턴 캐싱이 run_agent 루프에 연결됨")
 
 
 def test_approval_gate():
@@ -639,7 +693,7 @@ def test_run_session_injects_skill():
     captured = {}
 
     def fake_create(*, model, max_tokens, tools, messages, system=None):
-        captured["system"] = system
+        captured["system"] = _sys_text(system)
         return SimpleNamespace(stop_reason="end_turn", content=[TextBlockFake("ok")])
 
     agent.client.messages.create = fake_create
@@ -673,7 +727,7 @@ def test_run_session_extra_skills():
     captured = {}
 
     def fake_create(*, model, max_tokens, messages, tools=None, system=None, tool_choice=None):
-        captured["system"] = system
+        captured["system"] = _sys_text(system)
         return SimpleNamespace(stop_reason="end_turn", content=[TextBlockFake("ok")])
 
     orig = agent.client.messages.create
@@ -694,7 +748,7 @@ def test_system_prompt_four_elements():
     captured = {}
 
     def fake_create(*, model, max_tokens, messages, tools=None, system=None, tool_choice=None):
-        captured["system"] = system
+        captured["system"] = _sys_text(system)
         return SimpleNamespace(stop_reason="end_turn", content=[TextBlockFake("ok")])
 
     orig = agent.client.messages.create
