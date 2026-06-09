@@ -93,7 +93,9 @@ def test_agent_loop_with_read_file():
         tool_result_msg = second[2]["content"]
         assert tool_result_msg[0]["type"] == "tool_result"
         assert tool_result_msg[0]["tool_use_id"] == "toolu_test_1"
-        assert tool_result_msg[0]["content"] == "SENTINEL_CONTENT_12345"
+        # read_file 은 외부 입력 -> <tool_output> 으로 감싸짐 (인젝션 방어). 내용은 그 안에 포함.
+        assert "SENTINEL_CONTENT_12345" in tool_result_msg[0]["content"]
+        assert "<tool_output>" in tool_result_msg[0]["content"]
 
         print("PASS: agent loop + read_file (history 누적 / stop_reason 분기 / tool_use_id 매칭 / 실제 파일 읽기)")
     finally:
@@ -273,6 +275,11 @@ def test_is_error_propagation():
     # 헬퍼 단위: 에러 규약('Error:') -> is_error=True, 정상 -> 플래그 없음
     assert agent._make_tool_result("id1", "Error: 없음").get("is_error") is True
     assert "is_error" not in agent._make_tool_result("id2", "정상 결과")
+    # untrusted=True 면 <tool_output> 으로 감싸고, 에러 판정은 원본 기준 유지
+    wrapped = agent._make_tool_result("id3", "Error: x", untrusted=True)
+    assert "<tool_output>" in wrapped["content"] and "Error: x" in wrapped["content"]
+    assert wrapped.get("is_error") is True
+    assert "<tool_output>" not in agent._make_tool_result("id4", "ok")["content"]  # 기본 미래핑
 
     # 통합: 실패하는 툴(없는 파일 read_file)의 결과가 is_error=True 로 모델에 전달되는지
     seq = iter([
@@ -295,7 +302,7 @@ def test_is_error_propagation():
     trs = [b for m in msgs if m["role"] == "user" and isinstance(m["content"], list)
            for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result"]
     assert len(trs) == 1 and trs[0]["is_error"] is True, trs
-    assert trs[0]["content"].startswith("Error:")
+    assert "Error:" in trs[0]["content"]  # read_file 외부툴 -> <tool_output> 래핑 안에 에러 포함
     print("PASS: is_error 전파 (실패 툴 결과에 is_error=True)")
 
 
@@ -682,6 +689,29 @@ def test_run_session_extra_skills():
     print("PASS: extra_skills 강제 주입 (/skill 명령 기반)")
 
 
+def test_system_prompt_four_elements():
+    base = tempfile.mkdtemp()
+    captured = {}
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None, tool_choice=None):
+        captured["system"] = system
+        return SimpleNamespace(stop_reason="end_turn", content=[TextBlockFake("ok")])
+
+    orig = agent.client.messages.create
+    agent.client.messages.create = fake_create
+    try:
+        agent.run_session("아무 작업", session_id="sp1", base_dir=base, skills_dir=tempfile.mkdtemp())
+    finally:
+        agent.client.messages.create = orig
+
+    sp = captured["system"]
+    assert "작업 디렉토리" in sp and "OS:" in sp          # ① 환경 정보 주입
+    assert "[툴 사용 규율]" in sp                          # ② 툴 선택 규율
+    assert "[에러 복구]" in sp                             # ③ 에러 복구 유도
+    assert "[보안" in sp and "데이터" in sp and "지시" in sp  # ④ 인젝션 방어(신뢰 경계)
+    print("PASS: 시스템 프롬프트 4요소 (환경/툴규율/에러복구/인젝션방어)")
+
+
 if __name__ == "__main__":
     test_read_file()
     test_write_file()
@@ -708,5 +738,6 @@ if __name__ == "__main__":
     test_run_session_injects_skill()
     test_list_and_get_skill()
     test_run_session_extra_skills()
+    test_system_prompt_four_elements()
     test_streaming_emits_text_and_tool()
     print("\n모든 테스트 통과 ✅")
