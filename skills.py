@@ -44,6 +44,34 @@ def load_relevant_skills(query: str, skills_dir: str = "skills", max_skills: int
     return "\n\n".join(chunks)
 
 
+def list_skills(skills_dir: str = "skills"):
+    """[(이름, 키워드 리스트, 첫 제목)] 목록을 반환 (슬래시 명령용)."""
+    out = []
+    if not os.path.isdir(skills_dir):
+        return out
+    for fn in sorted(os.listdir(skills_dir)):
+        if not fn.endswith(".md"):
+            continue
+        name, keywords, text = _parse_skill(os.path.join(skills_dir, fn))
+        title = ""
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("#"):
+                title = s.lstrip("#").strip()
+                break
+        out.append((name, keywords, title))
+    return out
+
+
+def get_skill_text(name: str, skills_dir: str = "skills"):
+    """이름으로 스킬 내용을 '### 이름\\n{본문}' 형식으로 반환. 없으면 None."""
+    path = os.path.join(skills_dir, name + ".md")
+    if not os.path.isfile(path):
+        return None
+    _, _, text = _parse_skill(path)
+    return f"### {name}\n{text}"
+
+
 def build_system_prompt(*, role: str, environment: str, task_context: str = "",
                         rules: str = "", output_format: str = "", skills: str = "") -> str:
     """구조화된 시스템 프롬프트 조립. 빈 섹션은 생략한다."""

@@ -599,6 +599,43 @@ def test_run_session_injects_skill():
     print("PASS: run_session 가 관련 스킬을 시스템 프롬프트에 주입")
 
 
+def test_list_and_get_skill():
+    sk = tempfile.mkdtemp()
+    with open(os.path.join(sk, "alpha.md"), "w", encoding="utf-8") as f:
+        f.write("<!-- keywords: a, b -->\n# 알파 가이드\n본문")
+
+    names = [n for n, _, _ in skillsmod.list_skills(sk)]
+    assert names == ["alpha"], names
+    title = skillsmod.list_skills(sk)[0][2]
+    assert title == "알파 가이드", title
+
+    got = skillsmod.get_skill_text("alpha", sk)
+    assert got.startswith("### alpha") and "본문" in got
+    assert skillsmod.get_skill_text("없음", sk) is None
+    print("PASS: list_skills / get_skill_text (슬래시 명령용)")
+
+
+def test_run_session_extra_skills():
+    base = tempfile.mkdtemp()
+    captured = {}
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None, tool_choice=None):
+        captured["system"] = system
+        return SimpleNamespace(stop_reason="end_turn", content=[TextBlockFake("ok")])
+
+    orig = agent.client.messages.create
+    agent.client.messages.create = fake_create
+    try:
+        # 키워드와 무관한 작업이라도 extra_skills 는 강제로 주입돼야 함
+        agent.run_session("아무 작업", session_id="es1", base_dir=base,
+                          skills_dir=tempfile.mkdtemp(), extra_skills="### 강제스킬\n강제 주입 내용")
+    finally:
+        agent.client.messages.create = orig
+
+    assert "강제 주입 내용" in captured["system"], captured["system"]
+    print("PASS: extra_skills 강제 주입 (/skill 명령 기반)")
+
+
 if __name__ == "__main__":
     test_read_file()
     test_write_file()
@@ -623,4 +660,6 @@ if __name__ == "__main__":
     test_build_system_prompt()
     test_load_relevant_skills()
     test_run_session_injects_skill()
+    test_list_and_get_skill()
+    test_run_session_extra_skills()
     print("\n모든 테스트 통과 ✅")

@@ -499,7 +499,7 @@ DEFAULT_OUTPUT_FORMAT = "작업 결과를 한국어로 간결하게 요약한다
 
 
 def run_session(task: str, session_id: str = None, base_dir: str = "sessions",
-                skills_dir: str = "skills", approve=None, tool_choice=None):
+                skills_dir: str = "skills", approve=None, tool_choice=None, extra_skills: str = ""):
     """세션을 이어받거나 새로 만들어 한 작업을 수행하고, 히스토리·progress 를 저장한다.
 
     구조화된 시스템 프롬프트(ROLE/ENVIRONMENT/TASK CONTEXT/RULES/OUTPUT FORMAT/SKILLS)를
@@ -520,7 +520,8 @@ def run_session(task: str, session_id: str = None, base_dir: str = "sessions",
         task_context=mgr.read_progress(session),       # 이전 세션 진행 기록 (이어받기)
         rules=DEFAULT_RULES,
         output_format=DEFAULT_OUTPUT_FORMAT,
-        skills=load_relevant_skills(task, skills_dir),  # 키워드 검색 -> 주입
+        # 키워드 자동 매칭 스킬 + 슬래시로 강제한 스킬(extra_skills) 을 합쳐 주입
+        skills="\n\n".join(s for s in (load_relevant_skills(task, skills_dir), extra_skills) if s),
     )
     session.system_prompt = system  # 기록용
 
