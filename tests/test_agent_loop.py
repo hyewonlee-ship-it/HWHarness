@@ -644,6 +644,59 @@ def test_run_agent_parallel_tool_results_order():
     print("PASS: 병렬 tool_result 원래 순서로 조립")
 
 
+def test_dependency_scheduling():
+    mk = lambda i, name, **inp: block(type="tool_use", id=f"t{i}", name=name, input=inp)
+    shape = lambda bs: [len(s) for s in agent._schedule_stages(bs)]
+
+    # 독립(다른 파일 읽기) → 1단계 병렬
+    assert shape([mk(0, "read_file", path="a"), mk(1, "read_file", path="b")]) == [2]
+    # 같은 파일 write→read → 충돌, 2단계 순차
+    assert shape([mk(0, "write_file", path="x", content=""), mk(1, "read_file", path="x")]) == [1, 1]
+    # 같은 파일 edit 두 번 → 순차
+    assert shape([mk(0, "edit_file", path="x", old_string="a", new_string="b"),
+                  mk(1, "edit_file", path="x", old_string="b", new_string="c")]) == [1, 1]
+    # 다른 파일 write → 병렬
+    assert shape([mk(0, "write_file", path="a", content=""),
+                  mk(1, "write_file", path="b", content="")]) == [2]
+    # bash 는 전역 장벽 → 다른 FS 툴과 순차
+    assert shape([mk(0, "read_file", path="a"), mk(1, "bash", command="ls"),
+                  mk(2, "read_file", path="b")]) == [1, 1, 1]
+    # 네트워크 툴은 로컬 자원 없음 → 파일 읽기와도 병렬
+    assert shape([mk(0, "web_fetch", url="http://x"), mk(1, "read_file", path="a")]) == [2]
+    # 서브트리 겹침: dir/f 쓰기 + dir 검색 → 순차
+    assert shape([mk(0, "write_file", path="d/f", content=""), mk(1, "grep", pattern="x", path="d")]) == [1, 1]
+    print("PASS: 의존성 스케줄링 (충돌=순차 / 독립=병렬 / bash 장벽 / 서브트리)")
+
+
+def test_run_agent_dependent_write_then_read():
+    # write_file(X) 와 read_file(X) 가 한 응답에 오면, 의존 감지로 write 가 먼저 실행돼
+    # read 결과에 방금 쓴 내용이 보여야 한다 (순서 무시 시 read 가 빈/없는 파일을 볼 위험).
+    p = os.path.join(tempfile.mkdtemp(), "dep.txt")
+    seq = iter([
+        SimpleNamespace(stop_reason="tool_use", content=[
+            block(type="tool_use", id="w", name="write_file", input={"path": p, "content": "WROTE_IT"}),
+            block(type="tool_use", id="r", name="read_file", input={"path": p}),
+        ]),
+        SimpleNamespace(stop_reason="end_turn", content=[block(type="text", text="done")]),
+    ])
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None, **kw):
+        return next(seq)
+
+    orig = agent.client.messages.create
+    agent.client.messages.create = fake_create
+    msgs = []
+    try:
+        agent.run_agent("write 후 read", messages=msgs)
+    finally:
+        agent.client.messages.create = orig
+    trs = {b["tool_use_id"]: b["content"] for m in msgs
+           if m["role"] == "user" and isinstance(m["content"], list)
+           for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result"}
+    assert "WROTE_IT" in trs["r"], trs["r"]  # write 가 먼저 → read 가 그 내용을 봄
+    print("PASS: 의존(write→read) 순차 — read 가 write 결과를 봄")
+
+
 def test_approval_gate():
     # bash 를 호출하는 응답 -> 그 다음 end_turn
     def make_seq():

@@ -90,6 +90,7 @@
 4. **병렬 tool_use** (효율) — ✅ **적용됨**
    - **왜**: Claude Code 는 "의존 없는 호출은 병렬로". 한 응답의 여러 tool_use 를 병렬 실행해 지연을 줄인다.
    - **조치(완료)**: `_execute_tool_blocks` 가 `ThreadPoolExecutor`(`MAX_PARALLEL_TOOLS=8`)로 동시 실행(`PARALLEL_TOOLS` 토글). 승인 게이트(`input()`)는 인터랙티브라 메인 스레드에서 순차 처리하고 승인된 툴만 병렬화, `tool_result` 는 원래 tool_use 순서대로 조립해 id 매칭·결정성 보존. 툴이 I/O 바운드(파일/네트워크/subprocess)라 스레드로 실제 동시성(실측 3×sleep1 → 3배 단축). 예외는 `_run_tool_safe` 로 격리.
+   - **의존성 자동 판단(완료)**: `DEPENDENCY_AWARE` + `_schedule_stages` 가 자원 충돌(같은/겹치는 경로에 하나라도 쓰기 — write/edit↔read/write, `bash`는 전역 장벽, `web_*`는 로컬 자원 없어 충돌 없음)을 감지해 **충돌하는 호출만 순차(stage 분리)·독립 호출은 병렬**로 자동 분배한다. 한 응답의 tool_use 는 모델이 결과를 보기 전에 정한 것이라 원칙적으로 독립이지만, 같은 파일 write→read 처럼 순서가 의미 있는 경우를 잡아 잘못된 동시 접근을 막는다. (Claude Code 실제 Edit 는 read-before-edit 상태 추적, 우리는 자원 충돌 그래프로 접근 — 같은 목표.)
 
 ---
 

@@ -35,6 +35,7 @@ CACHE_MESSAGES = True  # 매 턴 마지막 메시지 블록에 cache_control —
 REQUIRES_APPROVAL = {"bash"}  # 실행 전 사용자 승인이 필요한 툴 (human-in-the-loop)
 PARALLEL_TOOLS = True         # 한 응답의 여러 tool_use 를 병렬 실행 (의존 없는 호출의 지연 단축)
 MAX_PARALLEL_TOOLS = 8        # 동시에 돌릴 최대 툴 수
+DEPENDENCY_AWARE = True       # 자원 충돌(같은 파일 등)을 감지해 충돌만 순차, 독립은 병렬로 자동 판단
 WEB_SEARCH_SERVER_SIDE = True  # True: Anthropic 서버사이드 web_search 툴 / False: 프록시 Brave 직접 호출
 WEB_SEARCH_MAX_USES = 5        # 서버사이드 모드에서 한 응답당 최대 검색 횟수
 
@@ -553,6 +554,77 @@ def _execute_tool_blocks(blocks: list, approve=None) -> dict:
     return results
 
 
+def _tool_resource(name: str, tool_input: dict):
+    """툴이 건드리는 자원을 (경로, 모드) 로 추정한다. 모드: 'r'(읽기)/'w'(쓰기).
+
+    - read_file/grep/glob → 해당 경로(또는 디렉토리 서브트리) 읽기
+    - write_file/edit_file → 해당 파일 쓰기
+    - bash → 셸 커맨드는 불투명해 무엇을 건드릴지 모르므로 '전역 쓰기 장벽'으로 본다(보수적)
+    - web_search/web_fetch → 로컬 자원 없음(네트워크) → 충돌 없음
+    """
+    if name in ("write_file", "edit_file"):
+        return (os.path.abspath(tool_input.get("path", "")), "w")
+    if name == "read_file":
+        return (os.path.abspath(tool_input.get("path", "")), "r")
+    if name in ("grep", "glob"):
+        return (os.path.abspath(tool_input.get("path", ".")), "r")
+    if name == "bash":
+        return ("\0bash", "w")  # 전역 장벽
+    return (None, "r")          # 네트워크 툴: 로컬 자원 없음
+
+
+def _paths_overlap(p1: str, p2: str) -> bool:
+    """두 경로가 같거나 한쪽이 다른 쪽의 상위 디렉토리이면 True (서브트리 겹침)."""
+    p1, p2 = p1.rstrip(os.sep), p2.rstrip(os.sep)
+    return p1 == p2 or p2.startswith(p1 + os.sep) or p1.startswith(p2 + os.sep)
+
+
+def _tools_conflict(a, b) -> bool:
+    """두 tool_use 가 자원 충돌(순서가 의미 있는 관계)인가. 읽기-읽기는 안전, 하나라도 쓰기면서
+    경로가 겹치면 충돌. bash 는 전역 장벽이라 다른 로컬 FS 툴/다른 bash 와 충돌(네트워크는 제외)."""
+    pa, ma = _tool_resource(a.name, a.input)
+    pb, mb = _tool_resource(b.name, b.input)
+    if pa is None or pb is None:
+        return False                       # 네트워크 툴은 로컬 충돌 없음
+    if pa == "\0bash" or pb == "\0bash":
+        return True                        # bash ↔ (다른 FS 툴/bash): 보수적으로 순차
+    if ma == "r" and mb == "r":
+        return False                       # 읽기-읽기는 동시에 안전
+    return _paths_overlap(pa, pb)          # 하나라도 쓰기 + 경로 겹침 → 충돌
+
+
+def _schedule_stages(blocks: list) -> list:
+    """원래 tool_use 순서를 보존하며 충돌하지 않는 호출끼리 같은 stage 로 묶는다.
+
+    나중 호출이 앞선 호출과 충돌하면 그 호출의 stage 다음으로 민다(→ 순차). 같은 stage 안의
+    호출들은 서로 충돌하지 않음이 보장돼 병렬 실행해도 안전하다. 반환: stage 리스트(각 stage=blocks).
+    """
+    stage_of = []
+    for i, b in enumerate(blocks):
+        s = 0
+        for j in range(i):
+            if _tools_conflict(blocks[j], b):
+                s = max(s, stage_of[j] + 1)
+        stage_of.append(s)
+    return [[b for i, b in enumerate(blocks) if stage_of[i] == k]
+            for k in range(max(stage_of) + 1)]
+
+
+def _run_tool_batch(blocks: list, approve=None):
+    """tool_use 묶음을 실행해 ({id: result}, stages) 반환.
+
+    DEPENDENCY_AWARE 면 자원 충돌을 감지해 충돌하는 호출은 순차(stage 분리), 독립 호출은 병렬로
+    돌린다(stage 단위 순차, stage 내부 병렬). 아니면 전부 한 묶음으로 (가능하면) 병렬 실행.
+    """
+    if not (DEPENDENCY_AWARE and PARALLEL_TOOLS) or len(blocks) <= 1:
+        return _execute_tool_blocks(blocks, approve), [blocks]
+    stages = _schedule_stages(blocks)
+    results = {}
+    for stage in stages:
+        results.update(_execute_tool_blocks(stage, approve))
+    return results, stages
+
+
 def _make_tool_result(tool_use_id: str, result: str, untrusted: bool = False) -> dict:
     """tool_result 블록 생성. 'Error:' 접두사면 is_error 표시.
 
@@ -749,11 +821,12 @@ def run_agent(user_input: str, messages: list = None, system: str = None, sessio
         # tool_use: 호출된 모든 툴을 실행하고 결과를 한 번에 user 메시지로 반환
         if response.stop_reason == "tool_use":
             blocks = [b for b in response.content if b.type == "tool_use"]
-            if PARALLEL_TOOLS and len(blocks) > 1:
-                note = f"[parallel] {len(blocks)}개 tool_use 를 동시 실행"
+            # 자원 충돌을 감지해 충돌만 순차·독립은 병렬 → {id: result} + 실행 스케줄(stages)
+            results, stages = _run_tool_batch(blocks, approve)
+            if len(blocks) > 1:
+                shape = "+".join(str(len(s)) for s in stages)  # 예: "3"=전부병렬 / "1+1"=순차 / "2+1"
+                note = f"[schedule] tool_use {len(blocks)}개 → {len(stages)}단계 ({shape})"
                 emit("tool", note) if streaming else print(note)
-            # 승인은 메인 스레드 순차, 실행은 (가능하면) 병렬 → {id: result}
-            results = _execute_tool_blocks(blocks, approve)
             # tool_result 는 원래 tool_use 순서대로 조립 (id 매칭은 어차피 유지되지만 가독성·결정성)
             tool_results = []
             for block in blocks:
