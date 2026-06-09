@@ -145,6 +145,21 @@ _BASE_TOOLS = [
             "required": ["pattern"],
         },
     },
+    {
+        "name": "web_fetch",
+        "description": (
+            "이미 알고 있는 특정 http/https URL 의 콘텐츠를 가져와 텍스트로 반환한다. "
+            "검색이 아니라 '이 페이지를 읽어줘' 일 때 사용한다 (예: 문서·기사·API 응답 URL). "
+            "HTML 은 본문 텍스트로 변환되며 길면 잘린다. 검색어로 찾아야 하면 web_search 를 쓴다."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "가져올 http/https URL"},
+            },
+            "required": ["url"],
+        },
+    },
 ]
 
 # web_search 는 두 가지 방식으로 선언할 수 있다 (WEB_SEARCH_SERVER_SIDE 토글):
@@ -354,6 +369,61 @@ def web_search(query: str, count: int = 5) -> str:
     return "\n".join(lines)
 
 
+WEB_FETCH_TIMEOUT = 25
+WEB_FETCH_MAX_CHARS = 20000  # 가져온 본문을 이 길이로 잘라 컨텍스트 폭주 방지
+
+
+def _http_get_text(url: str, timeout: int):
+    """GET 요청 후 (본문 텍스트, content-type) 반환 (테스트에서 monkeypatch 하기 쉽도록 분리)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "HWHarness/1.0 (web_fetch)"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        ctype = resp.headers.get("Content-Type", "") or ""
+        raw = resp.read()
+    m = re.search(r"charset=([\w-]+)", ctype)
+    charset = m.group(1) if m else "utf-8"
+    try:
+        return raw.decode(charset, errors="replace"), ctype
+    except LookupError:  # 알 수 없는 charset
+        return raw.decode("utf-8", errors="replace"), ctype
+
+
+def _html_to_text(html_str: str) -> str:
+    """HTML 에서 script/style 을 제거하고 태그를 벗겨 읽을 수 있는 텍스트로 변환."""
+    s = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html_str)
+    s = re.sub(r"(?s)<[^>]+>", " ", s)            # 태그 제거
+    s = html.unescape(s)                           # HTML 엔티티 복원
+    s = re.sub(r"[ \t\r\f\v]+", " ", s)
+    s = re.sub(r"\n\s*\n\s*\n+", "\n\n", s)        # 과한 빈 줄 정리
+    return s.strip()
+
+
+def web_fetch(url: str) -> str:
+    """지정한 URL 의 콘텐츠를 클라이언트(우리 하네스)에서 직접 가져와 텍스트로 반환.
+
+    서버사이드 web_search 와 대비되는 '로컬 실행' 툴 — '내가 콕 집은 URL' 을 직접 fetch 한다.
+    http/https 만 허용(file://·ftp:// 등 차단 — 로컬 파일 접근/SSRF 류 방지). HTML 이면 태그를
+    벗겨 본문 텍스트로 만들고, 너무 길면 잘라 컨텍스트 폭주를 막는다. 실패 시 'Error: ...'.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        return f"Error: http/https URL 만 가져올 수 있습니다 (받은 scheme: {parts.scheme or '없음'})"
+    try:
+        text, ctype = _http_get_text(url, WEB_FETCH_TIMEOUT)
+    except urllib.error.HTTPError as exc:
+        return f"Error: web_fetch 실패 (HTTP {exc.code})"
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        return f"Error: web_fetch 네트워크 오류: {exc}"
+
+    if "html" in ctype.lower() or re.search(r"(?i)<html", text[:1000]):
+        text = _html_to_text(text)
+    text = text.strip()
+    if not text:
+        return "(빈 콘텐츠)"
+    if len(text) > WEB_FETCH_MAX_CHARS:
+        text = text[:WEB_FETCH_MAX_CHARS] + f"\n\n…(본문이 길어 {WEB_FETCH_MAX_CHARS}자에서 잘림)"
+    return text
+
+
 def execute_tool(name: str, tool_input: dict) -> str:
     """툴 이름으로 디스패치해서 실제 실행. 결과는 문자열로 반환."""
     if name == "read_file":
@@ -368,11 +438,14 @@ def execute_tool(name: str, tool_input: dict) -> str:
         return glob_files(tool_input["pattern"], tool_input.get("path", "."))
     if name == "web_search":
         return web_search(tool_input["query"], tool_input.get("count", 5))
+    if name == "web_fetch":
+        return web_fetch(tool_input["url"])
     return f"알 수 없는 툴: {name}"
 
 
 # 외부 입력(파일/웹/셸 출력)을 반환하는 툴 — 결과를 신뢰 경계로 감싼다 (인젝션 방어)
-EXTERNAL_TOOLS = {"read_file", "grep", "glob", "bash", "web_search"}
+# web_fetch 는 임의 URL 본문을 끌어오므로 인젝션 위험이 특히 커 반드시 포함한다.
+EXTERNAL_TOOLS = {"read_file", "grep", "glob", "bash", "web_search", "web_fetch"}
 
 
 def _make_tool_result(tool_use_id: str, result: str, untrusted: bool = False) -> dict:

@@ -245,6 +245,57 @@ def test_web_search():
     print("PASS: web_search (결과 포맷 / unescape / 결과없음 / count 클램프)")
 
 
+def test_web_fetch():
+    # http/https 외 scheme 차단 (로컬파일 접근/SSRF 방지)
+    assert agent.web_fetch("file:///etc/passwd").startswith("Error:")
+    assert agent.web_fetch("ftp://h/x").startswith("Error:")
+
+    orig = agent._http_get_text
+    try:
+        # HTML 본문 -> 텍스트 (script/style 제거, 엔티티 복원, 태그 제거)
+        agent._http_get_text = lambda u, t: (
+            "<html><body><h1>제목</h1><p>본문 &amp; 끝</p><script>bad()</script></body></html>",
+            "text/html; charset=utf-8")
+        out = agent.web_fetch("https://e.example/page")
+        assert "제목" in out and "본문 & 끝" in out
+        assert "bad()" not in out and "<h1>" not in out
+
+        # 긴 본문 잘림
+        agent._http_get_text = lambda u, t: ("x" * (agent.WEB_FETCH_MAX_CHARS + 500), "text/plain")
+        out2 = agent.web_fetch("https://e.example/big")
+        assert "잘림" in out2 and len(out2) < agent.WEB_FETCH_MAX_CHARS + 200
+
+        # 비-HTML(JSON)은 원문 그대로
+        agent._http_get_text = lambda u, t: ('{"a": 1}', "application/json")
+        assert agent.web_fetch("https://e.example/j") == '{"a": 1}'
+
+        # execute_tool 디스패치
+        agent._http_get_text = lambda u, t: ("본문ok", "text/plain")
+        assert agent.execute_tool("web_fetch", {"url": "https://e.example"}) == "본문ok"
+    finally:
+        agent._http_get_text = orig
+
+    # web_fetch 는 외부 입력 -> 인젝션 래핑 대상(EXTERNAL_TOOLS)
+    assert "web_fetch" in agent.EXTERNAL_TOOLS
+    print("PASS: web_fetch (scheme차단 / HTML텍스트화 / 잘림 / JSON원문 / 디스패치)")
+
+
+def test_web_fetch_http_error():
+    import urllib.error
+    orig = agent._http_get_text
+
+    def boom(url, timeout):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    agent._http_get_text = boom
+    try:
+        out = agent.web_fetch("https://e.example/missing")
+    finally:
+        agent._http_get_text = orig
+    assert out.startswith("Error:") and "404" in out
+    print("PASS: web_fetch HTTP 에러 처리")
+
+
 def test_unknown_tool():
     assert "알 수 없는" in agent.execute_tool("nope", {})
     print("PASS: 미지의 툴 디스패치")
