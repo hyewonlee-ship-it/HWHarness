@@ -73,13 +73,13 @@ PAGE = """<!DOCTYPE html>
   <div class="inbar">
     <select id="force" title="첫 턴 툴 강제 (tool_choice)">
       <option value="">강제 안 함</option>
-      <option value="web_search">web_search 강제</option>
+      <option value="web_fetch">web_fetch 강제</option>
       <option value="any">아무 툴 강제</option>
     </select>
-    <textarea id="box" rows="1" placeholder="작업을 입력하세요 (예: 없는파일.txt 읽어줘 / 오늘 날씨 검색해줘)"></textarea>
+    <textarea id="box" rows="1" placeholder="작업을 입력하세요 (예: https://example.com 가져와줘 / 없는파일.txt 읽어줘)"></textarea>
     <button id="send" onclick="send()">전송</button>
   </div>
-  <div class="hint">툴: read_file · write_file · bash · grep · glob · web_search &nbsp;|&nbsp; 실패=빨강 배지(is_error) · 드롭다운=tool_choice 강제 · 승인 게이트는 터미널 창에서</div>
+  <div class="hint">툴: read_file · write_file · bash · grep · glob · web_fetch · web_search(서버사이드) &nbsp;|&nbsp; 실패=빨강 배지(is_error) · 드롭다운=tool_choice 강제(web_search는 서버툴이라 강제 불가) · 승인 게이트는 터미널 창에서</div>
 </footer>
 <script>
 const list = document.getElementById('list');

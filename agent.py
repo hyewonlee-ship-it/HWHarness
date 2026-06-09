@@ -100,6 +100,26 @@ _BASE_TOOLS = [
         },
     },
     {
+        "name": "edit_file",
+        "description": (
+            "기존 파일의 일부만 교체한다: old_string 을 찾아 new_string 으로 바꾼다. 전체를 다시 쓰는 "
+            "write_file 보다 토큰이 적고 다른 부분을 건드리지 않아, 기존 파일 부분 수정에는 이걸 쓴다. "
+            "old_string 은 파일에서 유일하게 식별되도록 충분한 앞뒤 맥락을 포함해야 한다(없거나 여러 곳이면 "
+            "실패하며, 그때는 read_file 로 현재 내용을 다시 확인하라). 모든 일치를 바꾸려면 replace_all=true. "
+            "새 파일 생성·전체 교체는 write_file 을 쓴다."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "수정할 파일 경로"},
+                "old_string": {"type": "string", "description": "교체할 기존 텍스트 (유일하게 식별되도록 맥락 포함)"},
+                "new_string": {"type": "string", "description": "대체할 새 텍스트"},
+                "replace_all": {"type": "boolean", "description": "일치하는 모든 곳 교체 (기본 false)"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+    {
         "name": "bash",
         "description": (
             "전용 툴(read_file/write_file/grep/glob)로 할 수 없는 작업(빌드·실행·git 등)에만 사용한다. "
@@ -219,6 +239,48 @@ def write_file(path: str, content: str) -> str:
         return f"OK: {len(content)}자를 {path} 에 썼습니다."
     except OSError as exc:
         return f"Error: 쓰기 실패: {path} ({exc})"
+
+
+def edit_file(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+    """파일에서 old_string 을 new_string 으로 교체. 전체 덮어쓰기(write_file) 대비 토큰·정확성 이점.
+
+    토큰 효율: 바뀌는 부분만 주고받으면 되니 큰 파일을 통째로 다시 쓰지 않는다.
+    정확성: 교체 범위를 old_string 으로 명시하므로 의도치 않은 부분 손상이 적다.
+
+    stale content 감지(핵심): 모델이 기억하는 내용(old_string)이 실제 파일과 어긋나면 교체를 거부한다.
+    - old_string 이 없음 → 모델 기억이 낡음(파일이 그새 바뀌었거나 처음부터 잘못 앎). read_file 로
+      현재 내용을 다시 확인하라고 유도.
+    - old_string 이 여러 곳 → 어디를 바꿀지 모호. 맥락을 더 넣거나 replace_all 을 쓰라고 유도.
+    반환되는 'Error:' 는 _make_tool_result 에서 is_error=True 로 표시돼, 시스템 프롬프트의 에러
+    복구 규율(같은 호출 반복 금지 → 재확인 → 재시도)에 따라 모델이 스스로 복구하게 만든다.
+    """
+    if old_string == new_string:
+        return "Error: old_string 과 new_string 이 같습니다 (바뀌는 내용이 없음)."
+    try:
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        return f"Error: 파일을 찾을 수 없습니다: {path} (새 파일은 write_file 로 만드세요)"
+    except IsADirectoryError:
+        return f"Error: 디렉토리입니다 (파일 경로를 지정하세요): {path}"
+    except UnicodeDecodeError:
+        return f"Error: 텍스트로 디코딩할 수 없습니다 (바이너리 파일?): {path}"
+
+    count = content.count(old_string)
+    if count == 0:
+        return (f"Error: old_string 을 {path} 에서 찾지 못했습니다 (stale 가능성 — 기억한 내용이 "
+                f"실제 파일과 다릅니다). read_file 로 현재 내용을 다시 읽고 정확한 텍스트로 재시도하세요.")
+    if count > 1 and not replace_all:
+        return (f"Error: old_string 이 {path} 안에 {count}곳 있어 모호합니다. 앞뒤 줄을 더 포함해 한 "
+                f"곳만 가리키게 하거나, 모두 바꾸려면 replace_all=true 로 호출하세요.")
+
+    new_content = content.replace(old_string, new_string)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+    except OSError as exc:
+        return f"Error: 쓰기 실패: {path} ({exc})"
+    return f"OK: {path} 에서 {count if replace_all else 1}곳을 교체했습니다."
 
 
 BASH_TIMEOUT = 30  # 초
@@ -430,6 +492,9 @@ def execute_tool(name: str, tool_input: dict) -> str:
         return read_file(tool_input["path"])
     if name == "write_file":
         return write_file(tool_input["path"], tool_input["content"])
+    if name == "edit_file":
+        return edit_file(tool_input["path"], tool_input["old_string"],
+                         tool_input["new_string"], tool_input.get("replace_all", False))
     if name == "bash":
         return run_bash(tool_input["command"])
     if name == "grep":

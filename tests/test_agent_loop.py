@@ -147,6 +147,48 @@ def test_write_file():
     print("PASS: write_file (정상 쓰기 / 디렉토리 자동 생성)")
 
 
+def test_edit_file():
+    base = tempfile.mkdtemp()
+    p = os.path.join(base, "f.txt")
+    open(p, "w", encoding="utf-8").write("alpha\nbeta\ngamma\nbeta\n")
+
+    # 정상: 유일한 old_string 교체
+    r = agent.edit_file(p, "gamma", "GAMMA")
+    assert r.startswith("OK") and "1곳" in r
+    assert open(p, encoding="utf-8").read() == "alpha\nbeta\nGAMMA\nbeta\n"
+
+    # stale 감지: old_string 이 없으면 실패 + read_file 재확인 유도, 파일은 안 바뀜
+    r = agent.edit_file(p, "zeta", "X")
+    assert r.startswith("Error:") and "stale" in r and "read_file" in r
+    assert open(p, encoding="utf-8").read() == "alpha\nbeta\nGAMMA\nbeta\n"
+    # stale 결과는 is_error 로 모델에 전달돼 복구를 유도한다
+    assert agent._make_tool_result("id", r).get("is_error") is True
+
+    # 모호: 여러 곳이면 replace_all 없이는 실패
+    r = agent.edit_file(p, "beta", "B")
+    assert r.startswith("Error:") and "2곳" in r and "replace_all" in r
+
+    # replace_all: 모두 교체
+    r = agent.edit_file(p, "beta", "B", replace_all=True)
+    assert r.startswith("OK") and "2곳" in r
+    assert open(p, encoding="utf-8").read() == "alpha\nB\nGAMMA\nB\n"
+
+    # old==new: 변화 없음 -> 실패
+    assert agent.edit_file(p, "B", "B").startswith("Error:")
+
+    # 없는 파일 -> 실패(write_file 안내)
+    assert agent.edit_file(os.path.join(base, "none.txt"), "a", "b").startswith("Error:")
+
+    # execute_tool 디스패치 (replace_all 기본 False)
+    assert agent.execute_tool(
+        "edit_file", {"path": p, "old_string": "alpha", "new_string": "A"}).startswith("OK")
+    assert open(p, encoding="utf-8").read().startswith("A\n")
+
+    # 외부 입력이 아니므로 인젝션 래핑 대상 아님 (write_file 과 일관)
+    assert "edit_file" not in agent.EXTERNAL_TOOLS
+    print("PASS: edit_file (교체 / stale감지+is_error / 모호 / replace_all / old==new / 없는파일 / 디스패치)")
+
+
 def test_bash():
     # 정상 실행: stdout 반환 + exit 0
     out = agent.run_bash("echo hello_bash")
