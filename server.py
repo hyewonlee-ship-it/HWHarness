@@ -99,9 +99,21 @@ function addMsg(role, text){
 function scroll(){ const c=document.getElementById('chat'); c.scrollTop=c.scrollHeight; }
 
 box.addEventListener('keydown', e => {
+  // IME 조합 중(한글 등)에는 Enter 무시 — 안 그러면 마지막 글자가 중복 전송된다.
+  if(e.isComposing || e.keyCode === 229) return;
   if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
 });
 box.addEventListener('input', () => { box.style.height='auto'; box.style.height=Math.min(box.scrollHeight,160)+'px'; });
+
+function addToolRow(bot, line){
+  let tools = bot.querySelector('.tools');
+  if(!tools){ tools = document.createElement('div'); tools.className='tools'; bot.querySelector('.content').appendChild(tools); }
+  const err = line.indexOf('[tool:실패]') >= 0;
+  const row = document.createElement('div');
+  row.className = 'toolrow ' + (err?'err':'ok');
+  row.textContent = line;
+  tools.appendChild(row);
+}
 
 async function send(){
   const text = box.value.trim();
@@ -112,20 +124,29 @@ async function send(){
   const bot = addMsg('bot', '');
   const body = bot.querySelector('.body');
   body.innerHTML = '<span class="typing">생각 중…</span>';
+  let acc = '';  // 누적 텍스트
   try{
     const force = document.getElementById('force').value;
-    const res = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:text, force})});
-    const data = await res.json();
-    let toolsHtml = '';
-    if(data.tools && data.tools.length){
-      const rows = data.tools.map(t => {
-        const err = t.indexOf('[tool:실패]') >= 0;
-        return `<div class="toolrow ${err?'err':'ok'}">${esc(t)}</div>`;
-      }).join('');
-      toolsHtml = `<div class="tools">${rows}</div>`;
+    const res = await fetch('/api/chat-stream', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:text, force})});
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    while(true){
+      const {done, value} = await reader.read();
+      if(done) break;
+      buf += decoder.decode(value, {stream:true});
+      let idx;
+      while((idx = buf.indexOf('\\n\\n')) >= 0){      // SSE 이벤트 경계
+        const raw = buf.slice(0, idx); buf = buf.slice(idx+2);
+        if(!raw.startsWith('data: ')) continue;
+        const ev = JSON.parse(raw.slice(6));
+        if(ev.kind === 'text'){ acc += ev.data; body.textContent = acc; }
+        else if(ev.kind === 'tool'){ addToolRow(bot, ev.data); }
+        else if(ev.kind === 'done'){ body.textContent = ev.data || acc || '(빈 응답)'; }
+        else if(ev.kind === 'error'){ body.innerHTML = '<span style="color:#c00">[오류] '+esc(ev.data)+'</span>'; }
+        scroll();
+      }
     }
-    body.innerHTML = esc(data.answer || '(빈 응답)');
-    if(toolsHtml) bot.querySelector('.content').insertAdjacentHTML('beforeend', toolsHtml);
   }catch(err){
     body.innerHTML = '<span style="color:#c00">[오류] '+esc(String(err))+'</span>';
   }
@@ -200,6 +221,40 @@ class Handler(BaseHTTPRequestHandler):
             # 새 로그 prefix '[tool:ok]' / '[tool:실패]' 와 '[context]' 캡처
             tools = [ln for ln in log if ln.startswith("[tool") or ln.startswith("[context]")]
             self._send(200, json.dumps({"answer": answer, "tools": tools}))
+            return
+
+        if self.path == "/api/chat-stream":
+            message = (payload.get("message") or "").strip()
+            if not message:
+                self._send(400, json.dumps({"error": "empty message"}))
+                return
+            force = (payload.get("force") or "").strip()
+            if force == "any":
+                tool_choice = {"type": "any"}
+            elif force:
+                tool_choice = {"type": "tool", "name": force}
+            else:
+                tool_choice = None
+
+            # SSE 응답 시작 (Content-Length 없이, 연결 종료로 끝을 알림)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+
+            def emit(kind, data):
+                chunk = f"data: {json.dumps({'kind': kind, 'data': data}, ensure_ascii=False)}\n\n"
+                self.wfile.write(chunk.encode("utf-8"))
+                self.wfile.flush()  # 버퍼링 방지 — 즉시 전송
+
+            try:
+                with LOCK:  # 한 번에 한 작업만
+                    _, answer = agent.run_session(
+                        message, session_id=SESSION, tool_choice=tool_choice, on_event=emit,
+                    )
+                emit("done", answer)
+            except Exception as exc:  # noqa: BLE001
+                emit("error", f"{type(exc).__name__}: {exc}")
             return
 
         self._send(404, json.dumps({"error": "not found"}))

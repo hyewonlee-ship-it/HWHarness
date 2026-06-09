@@ -412,19 +412,25 @@ def cli_approve(name: str, tool_input: dict) -> bool:
 
 
 def run_agent(user_input: str, messages: list = None, system: str = None, session=None,
-              approve=None, tool_choice=None) -> str:
+              approve=None, tool_choice=None, on_event=None) -> str:
     """한 작업을 수행한다. messages 를 넘기면 그 히스토리를 이어서(in-place) 누적한다.
 
     messages=None 이면 새 리스트로 시작. system 이 있으면 시스템 프롬프트로 전달.
     session 을 넘기면 컨텍스트 압축 발생 시 compaction_count 를 증가시킨다.
     approve(tool명, 입력)->bool 콜백을 넘기면 REQUIRES_APPROVAL 툴은 실행 전 확인받는다.
-    (None 이면 게이트 없이 자동 실행 — 웹/테스트 기본값)
     tool_choice 를 넘기면 첫 턴에만 적용한다 (매 턴 강제하면 end_turn 이 안 와 무한 루프).
-    예: {"type": "any"} 또는 {"type": "tool", "name": "web_search"}
+    on_event(kind, data) 콜백을 넘기면 응답을 스트리밍하며 토큰("text")·툴("tool") 이벤트를
+    실시간으로 흘려보낸다. 없으면 기존 블로킹(create) 방식.
     """
     if messages is None:
         messages = []
     messages.append({"role": "user", "content": user_input})
+
+    streaming = on_event is not None
+
+    def emit(kind, data):
+        if on_event:
+            on_event(kind, data)
 
     turns = 0
     while True:
@@ -452,7 +458,15 @@ def run_agent(user_input: str, messages: list = None, system: str = None, sessio
             kwargs["system"] = system
         if tool_choice and turns == 1:  # 강제는 첫 턴에만 — 이후 auto 로 풀어 마무리 가능하게
             kwargs["tool_choice"] = tool_choice
-        response = client.messages.create(**kwargs)
+
+        if streaming:
+            # 스트리밍: 토큰 델타를 받는 즉시 on_event 로 흘려보내고, 끝나면 최종 메시지 확보
+            with client.messages.stream(**kwargs) as stream:
+                for delta in stream.text_stream:
+                    emit("text", delta)
+                response = stream.get_final_message()
+        else:
+            response = client.messages.create(**kwargs)
 
         # 모델 응답(텍스트 + tool_use 블록 전체)을 히스토리에 누적
         messages.append({"role": "assistant", "content": response.content})
@@ -477,7 +491,11 @@ def run_agent(user_input: str, messages: list = None, system: str = None, sessio
                         result = execute_tool(block.name, block.input)
                     tr = _make_tool_result(block.id, result)  # tool_use_id 매칭 + is_error 판정
                     mark = "실패" if tr.get("is_error") else "ok"
-                    print(f"[tool:{mark}] {block.name}({json.dumps(block.input, ensure_ascii=False)}) -> {result}")
+                    line = f"[tool:{mark}] {block.name}({json.dumps(block.input, ensure_ascii=False)}) -> {result}"
+                    if streaming:
+                        emit("tool", line)  # 웹 UI 로 실시간 전송
+                    else:
+                        print(line)         # 콘솔(chat/qa)
                     tool_results.append(tr)
             messages.append({"role": "user", "content": tool_results})
             continue
@@ -499,7 +517,8 @@ DEFAULT_OUTPUT_FORMAT = "작업 결과를 한국어로 간결하게 요약한다
 
 
 def run_session(task: str, session_id: str = None, base_dir: str = "sessions",
-                skills_dir: str = "skills", approve=None, tool_choice=None, extra_skills: str = ""):
+                skills_dir: str = "skills", approve=None, tool_choice=None, extra_skills: str = "",
+                on_event=None):
     """세션을 이어받거나 새로 만들어 한 작업을 수행하고, 히스토리·progress 를 저장한다.
 
     구조화된 시스템 프롬프트(ROLE/ENVIRONMENT/TASK CONTEXT/RULES/OUTPUT FORMAT/SKILLS)를
@@ -526,7 +545,7 @@ def run_session(task: str, session_id: str = None, base_dir: str = "sessions",
     session.system_prompt = system  # 기록용
 
     answer = run_agent(task, messages=session.messages, system=system, session=session,
-                       approve=approve, tool_choice=tool_choice)
+                       approve=approve, tool_choice=tool_choice, on_event=on_event)
 
     # 토큰 수 대략 추정(문자/4) — 정확한 카운팅/컴팩션은 4단계에서
     session.token_count = len(json.dumps(serialize_messages(session.messages), ensure_ascii=False)) // 4

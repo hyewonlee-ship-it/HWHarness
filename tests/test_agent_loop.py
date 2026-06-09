@@ -367,6 +367,52 @@ def test_tool_choice_first_turn_only():
     print("PASS: tool_choice 강제 (첫 턴만 적용, 이후 auto)")
 
 
+class _FakeStream:
+    """client.messages.stream 컨텍스트매니저 흉내."""
+    def __init__(self, deltas, final):
+        self._deltas, self._final = deltas, final
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    @property
+    def text_stream(self):
+        return iter(self._deltas)
+
+    def get_final_message(self):
+        return self._final
+
+
+def test_streaming_emits_text_and_tool():
+    events = []
+    streams = iter([
+        # turn1: 텍스트 델타 없이 tool_use (read_file 실패)
+        _FakeStream([], SimpleNamespace(stop_reason="tool_use", content=[
+            block(type="tool_use", id="ts", name="read_file", input={"path": "__nope__"})])),
+        # turn2: 토큰 델타 후 end_turn
+        _FakeStream(["안녕", "하세요"],
+                    SimpleNamespace(stop_reason="end_turn", content=[TextBlockFake("안녕하세요")])),
+    ])
+
+    def fake_stream(**kwargs):
+        return next(streams)
+
+    orig = agent.client.messages.stream
+    agent.client.messages.stream = fake_stream
+    try:
+        result = agent.run_agent("hi", on_event=lambda k, d: events.append((k, d)))
+    finally:
+        agent.client.messages.stream = orig
+
+    assert ("text", "안녕") in events and ("text", "하세요") in events  # 토큰 델타 emit
+    assert any(k == "tool" for k, _ in events)                         # 툴 이벤트 emit
+    assert result == "안녕하세요"
+    print("PASS: 스트리밍 (text 델타 + tool 이벤트 emit)")
+
+
 # ---- 세션 관리 (3단계) ----------------------------------------------------
 
 import session as sessmod  # noqa: E402
@@ -662,4 +708,5 @@ if __name__ == "__main__":
     test_run_session_injects_skill()
     test_list_and_get_skill()
     test_run_session_extra_skills()
+    test_streaming_emits_text_and_tool()
     print("\n모든 테스트 통과 ✅")
