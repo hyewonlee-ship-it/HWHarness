@@ -250,6 +250,51 @@ def test_unknown_tool():
     print("PASS: 미지의 툴 디스패치")
 
 
+def test_web_search_server_side_tool_declaration():
+    # 기본(서버사이드): TOOLS 의 web_search 는 Anthropic 서버툴 타입으로 선언된다
+    ws = [t for t in agent.TOOLS if t.get("name") == "web_search"][0]
+    if agent.WEB_SEARCH_SERVER_SIDE:
+        assert ws["type"] == "web_search_20250305"      # 서버가 검색 수행 (클라이언트 키/HTTP 불요)
+        assert "input_schema" not in ws                  # 커스텀 스키마 아님
+    # 두 정의의 형태 대비 (학습 포인트): 서버=type 선언 / 클라이언트=input_schema 보유
+    assert agent._WEB_SEARCH_SERVER["type"] == "web_search_20250305"
+    assert "input_schema" in agent._WEB_SEARCH_CLIENT and "type" not in agent._WEB_SEARCH_CLIENT
+    print("PASS: 서버사이드 web_search 툴 선언 (type=web_search_20250305)")
+
+
+def test_server_tool_use_not_dispatched_locally():
+    # 서버사이드 검색 응답(server_tool_use/web_search_tool_result + 최종 text)은 우리 루프가
+    # execute_tool 로 실행하지 않고, 한 번의 end_turn 으로 마무리되어야 한다.
+    seq = iter([
+        SimpleNamespace(stop_reason="end_turn", content=[
+            block(type="text", text="검색하겠습니다."),
+            block(type="server_tool_use", name="web_search", input={"query": "현재 한국 대통령"}),
+            block(type="web_search_tool_result", content=[{"title": "r1"}, {"title": "r2"}]),
+            block(type="text", text="답: ..."),
+        ]),
+    ])
+    calls = {"n": 0}
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None, **kw):
+        calls["n"] += 1
+        return next(seq)
+
+    orig_create = agent.client.messages.create
+    orig_exec = agent.execute_tool
+    dispatched = []
+    agent.client.messages.create = fake_create
+    agent.execute_tool = lambda name, ti: dispatched.append(name) or "x"
+    try:
+        out = agent.run_agent("현재 한국 대통령 검색해줘")
+    finally:
+        agent.client.messages.create = orig_create
+        agent.execute_tool = orig_exec
+    assert calls["n"] == 1                 # 한 번의 호출로 끝남 (서버에서 검색 완결)
+    assert dispatched == []                # execute_tool 미호출 (클라이언트 검색 안 함)
+    assert out == "검색하겠습니다.답: ..."  # 텍스트 블록 전부 이어붙임 (프리앰블+답변)
+    print("PASS: server_tool_use 는 로컬 디스패치 없이 end_turn 으로 마무리")
+
+
 def test_max_turns_guard():
     # mock: 툴이 주어지면 무조건 tool_use(끝없음), 툴 없이 오면(마무리 호출) end_turn+텍스트
     calls = {"n": 0}
