@@ -9,9 +9,21 @@
 pip install anthropic          # 유일한 의존성
 cp .env.example .env           # ANTHROPIC_AUTH_TOKEN 에 회사 AI 프록시 토큰 입력
 python agent.py                # 데모 1회 실행 (세션 기반)
+python chat.py                 # 대화형 CLI
 python demo.py                 # 전체 기능 시연 (보고/데모용)
 python tests/test_agent_loop.py  # 단위 테스트 (네트워크 불필요)
 ```
+
+### 전역 `HWHarness` 명령 (선택)
+
+어디서든 `HWHarness` 를 치면 대화형 CLI 가 뜨게 하려면 PATH 에 런처를 링크한다 (`~/.local/bin` 이 PATH 에 있어야 함):
+
+```bash
+ln -sf "$PWD/bin/HWHarness" ~/.local/bin/HWHarness
+HWHarness   # 이제 어느 디렉토리에서든 실행
+```
+
+런처는 자기 위치를 따라 프로젝트 루트를 자동으로 찾으므로 경로 수정이 필요 없다.
 
 ## 설정 (회사 프록시 pass-through)
 

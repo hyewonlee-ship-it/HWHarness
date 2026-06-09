@@ -1,0 +1,17 @@
+#!/bin/bash
+# HWHarness CLI 런처 — 어디서 실행하든 프로젝트 디렉토리에서 대화형 chat 을 띄운다.
+# PATH 에 심볼릭 링크해서 'HWHarness' 명령으로 사용:
+#   ln -sf "$PWD/bin/HWHarness" ~/.local/bin/HWHarness
+#
+# 심볼릭 링크로 호출돼도 자기 실제 위치를 따라가 프로젝트 루트를 찾는다 (경로 하드코딩 없음).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+HWH_DIR="$(dirname "$BIN_DIR")"   # bin/ 의 상위 = 프로젝트 루트
+
+cd "$HWH_DIR" || { echo "HWHarness 디렉토리를 찾을 수 없습니다: $HWH_DIR"; exit 1; }
+exec python3 chat.py "$@"
