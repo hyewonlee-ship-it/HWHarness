@@ -360,6 +360,86 @@ def test_cache_messages_wired_into_loop():
     print("PASS: 멀티턴 캐싱이 run_agent 루프에 연결됨")
 
 
+def _has_cc(b):
+    return isinstance(b, dict) and "cache_control" in b
+
+
+def test_multiturn_breakpoint_moves_not_accumulates():
+    """멀티턴 루프에서 브레이크포인트가 매 턴 '마지막 메시지로 이동'하고 이전 메시지엔
+    누적되지 않는지 검증. 이게 안 되면(예: system 위치 고정) write 만 되고 read 로
+    회수되지 않는 헛쓰기가 난다 — 그 구조적 원인을 막는지 본다.
+    (실제 cache_write/read 토큰 측정은 bench_caching.py 의 멀티턴 시나리오 담당.)
+    """
+    # 툴 3회 호출 후 종료 → create 4번 호출, 매 턴 tool_result 가 누적
+    responses = [
+        SimpleNamespace(stop_reason="tool_use",
+                        content=[block(type="tool_use", id=f"t{i}", name="read_file",
+                                       input={"path": f"__nope{i}__"})])
+        for i in range(3)
+    ] + [SimpleNamespace(stop_reason="end_turn", content=[block(type="text", text="끝")])]
+    captured = []
+    calls = {"n": 0}
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None, **kw):
+        captured.append(messages)               # _cache_messages 가 적용된 요청 그 자체
+        r = responses[calls["n"]]; calls["n"] += 1
+        return r
+
+    orig = agent.client.messages.create
+    agent.client.messages.create = fake_create
+    history = []
+    try:
+        agent.run_agent("조사해줘", messages=history)
+    finally:
+        agent.client.messages.create = orig
+
+    assert len(captured) == 4
+    for turn, msgs in enumerate(captured, 1):
+        last = msgs[-1]["content"]
+        assert isinstance(last, list) and _has_cc(last[-1]), f"turn{turn}: 마지막 블록에 브레이크포인트 없음"
+        # 한 요청에 메시지 마커는 정확히 1곳 — 이전 메시지로 누적되면 안 됨(4개 한도/정렬 문제)
+        marks = sum(_has_cc(b) for m in msgs for b in (m["content"] if isinstance(m["content"], list) else []))
+        assert marks == 1, f"turn{turn}: 메시지 마커 {marks}개 (이동이 아니라 누적됨)"
+
+    # 원본 히스토리(세션에 저장될 것)엔 마커가 단 하나도 남지 않아야 함
+    for m in history:
+        if isinstance(m["content"], list):
+            assert not any(_has_cc(b) for b in m["content"]), "원본 히스토리에 cache_control 오염"
+    print("PASS: 멀티턴 브레이크포인트 이동 + 원본 히스토리 무오염")
+
+
+def test_msg_cache_off_leaves_no_message_breakpoint():
+    """CACHE_MESSAGES=False 면 메시지엔 브레이크포인트가 전혀 안 붙는다.
+
+    이 상태에서 system 에만 마커가 있으면(below-minimum) 브레이크포인트가 꼬리를 못 따라가
+    write 만 반복하는 헛쓰기가 난다 — A/B 실험으로 확인된 케이스. 그 '메시지 무마킹' 설정을
+    구조적으로 대조 고정한다.
+    """
+    captured = {}
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None, **kw):
+        captured["messages"] = [dict(m) for m in messages]
+        return SimpleNamespace(stop_reason="end_turn", content=[block(type="text", text="done")])
+
+    orig = agent.client.messages.create
+    orig_flag = agent.CACHE_MESSAGES
+    agent.client.messages.create = fake_create
+    agent.CACHE_MESSAGES = False
+    try:
+        agent.run_agent("안녕")
+    finally:
+        agent.client.messages.create = orig
+        agent.CACHE_MESSAGES = orig_flag
+
+    for m in captured["messages"]:
+        c = m["content"]
+        if isinstance(c, list):
+            assert not any(_has_cc(b) for b in c)
+        else:
+            assert isinstance(c, str)  # 문자열 그대로 — text 블록 변환/마킹조차 안 함
+    print("PASS: msg캐시 OFF 시 메시지 브레이크포인트 없음 (헛쓰기 설정 대조)")
+
+
 def test_approval_gate():
     # bash 를 호출하는 응답 -> 그 다음 end_turn
     def make_seq():
