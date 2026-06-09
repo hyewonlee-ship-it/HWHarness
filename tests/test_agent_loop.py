@@ -578,6 +578,72 @@ def test_msg_cache_off_leaves_no_message_breakpoint():
     print("PASS: msg캐시 OFF 시 메시지 브레이크포인트 없음 (헛쓰기 설정 대조)")
 
 
+def test_parallel_tools_run_concurrently():
+    # 느린 툴 여러 개가 병렬로 겹쳐 실행되는지 벽시계로 확인 (4*0.3s 순차=1.2s, 병렬≈0.3s)
+    import time
+    orig = agent.execute_tool
+    agent.execute_tool = lambda name, ti: (time.sleep(0.3), f"done:{ti['k']}")[1]
+    blocks = [block(type="tool_use", id=f"t{i}", name="read_file", input={"k": i}) for i in range(4)]
+    try:
+        agent.PARALLEL_TOOLS = True
+        t = time.perf_counter()
+        res = agent._execute_tool_blocks(blocks, approve=None)
+        elapsed = time.perf_counter() - t
+    finally:
+        agent.execute_tool = orig
+    assert set(res) == {f"t{i}" for i in range(4)}
+    assert elapsed < 0.9, f"병렬이 아닌 듯: {elapsed:.2f}s"
+    print(f"PASS: 병렬 tool 동시 실행 ({elapsed:.2f}s)")
+
+
+def test_parallel_tools_order_and_approval():
+    # 승인 거부된 툴은 실행 안 되고, 승인 불필요 툴은 실행됨 (승인은 메인 스레드 순차)
+    executed = []
+    orig = agent.execute_tool
+    agent.execute_tool = lambda name, ti: (executed.append(ti.get("path") or ti.get("command")),
+                                           f"ran:{ti.get('path')}")[1]
+    blocks = [
+        block(type="tool_use", id="a", name="read_file", input={"path": "A"}),
+        block(type="tool_use", id="b", name="bash", input={"command": "rm x"}),  # 승인 대상
+        block(type="tool_use", id="c", name="read_file", input={"path": "C"}),
+    ]
+    try:
+        res = agent._execute_tool_blocks(blocks, approve=lambda n, i: False)  # 모두 거부
+    finally:
+        agent.execute_tool = orig
+    assert res["b"].startswith("Error: 사용자가 실행을 거부")  # bash 거부
+    assert "rm x" not in executed                              # bash 는 실행 안 됨
+    assert res["a"] == "ran:A" and res["c"] == "ran:C"         # read_file 은 실행됨
+    print("PASS: 병렬 — 승인 게이트 보존 (거부 툴 미실행)")
+
+
+def test_run_agent_parallel_tool_results_order():
+    # run_agent 가 여러 tool_use 결과를 원래 tool_use 순서대로 조립하는지 (id 매칭 무결성)
+    seq = iter([
+        SimpleNamespace(stop_reason="tool_use", content=[
+            block(type="tool_use", id="id1", name="glob", input={"pattern": "*.nope1"}),
+            block(type="tool_use", id="id2", name="glob", input={"pattern": "*.nope2"}),
+            block(type="tool_use", id="id3", name="glob", input={"pattern": "*.nope3"}),
+        ]),
+        SimpleNamespace(stop_reason="end_turn", content=[block(type="text", text="ok")]),
+    ])
+
+    def fake_create(*, model, max_tokens, messages, tools=None, system=None, **kw):
+        return next(seq)
+
+    orig = agent.client.messages.create
+    agent.client.messages.create = fake_create
+    msgs = []
+    try:
+        agent.run_agent("세 개 glob 동시에", messages=msgs)
+    finally:
+        agent.client.messages.create = orig
+    trs = [b for m in msgs if m["role"] == "user" and isinstance(m["content"], list)
+           for b in m["content"] if isinstance(b, dict) and b.get("type") == "tool_result"]
+    assert [t["tool_use_id"] for t in trs] == ["id1", "id2", "id3"]  # 원래 순서 보존
+    print("PASS: 병렬 tool_result 원래 순서로 조립")
+
+
 def test_approval_gate():
     # bash 를 호출하는 응답 -> 그 다음 end_turn
     def make_seq():

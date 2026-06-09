@@ -34,7 +34,7 @@ python agent.py
 - **히스토리**: `messages` 가 전체 대화를 누적한다. 매 턴 어시스턴트의 `response.content` 전체(텍스트 **그리고** `tool_use` 블록)를 붙인다. 추출한 텍스트만 붙이면 안 된다 — `tool_use` 블록을 빠뜨리면 다음 요청이 깨진다.
 - **루프 제어** 는 `response.stop_reason` 으로 분기한다:
   - `end_turn` → 최종 텍스트를 추출해 반환.
-  - `tool_use` → 호출된 모든 툴을 실행하고 결과를 하나의 `user` 메시지로 붙인 뒤 계속. 각 `tool_result.tool_use_id` 는 원래 `tool_use` 블록의 id 와 일치해야 한다.
+  - `tool_use` → 호출된 모든 툴을 실행하고 결과를 하나의 `user` 메시지로 붙인 뒤 계속. 각 `tool_result.tool_use_id` 는 원래 `tool_use` 블록의 id 와 일치해야 한다. 한 응답에 여러 `tool_use` 가 오면 **병렬 실행**한다(`PARALLEL_TOOLS`, `_execute_tool_blocks` → `ThreadPoolExecutor`): 승인 게이트(`input()`)는 메인 스레드에서 순차 처리하고 승인된 툴만 동시 실행하며, `tool_result` 는 원래 순서대로 조립한다(I/O 바운드라 스레드로 실제 동시성).
   - `pause_turn` → 서버사이드 툴이 이어가도록 그대로 다시 보낸다.
 - **툴**: `TOOLS`(JSON 스키마)에 선언하고 `execute_tool()` 에서 이름으로 디스패치한다. 새 툴은 둘 다 확장해서 추가. 현재 툴: `read_file`, `write_file`(전체 쓰기), `edit_file`(부분 교체 + stale 감지), `bash`(30초 타임아웃 + 위험 명령 블록리스트), `grep`(파일 내용 정규식), `glob`(파일명 패턴), `web_fetch`(특정 URL 본문을 로컬에서 가져옴), `web_search`.
 - **edit_file — 부분 수정 + stale content 감지**: `old_string` 을 `new_string` 으로 교체한다(`edit_file()`). 전체 덮어쓰기(`write_file`)보다 토큰이 적고(바뀌는 부분만 주고받음) 다른 부분을 건드리지 않아 정확하다. **stale 감지가 핵심**: 모델이 기억한 `old_string` 이 실제 파일과 어긋나면 교체를 거부한다 — (a) 못 찾으면 "stale 가능성, `read_file` 로 다시 확인" 유도, (b) 여러 곳이면 "맥락 추가 또는 `replace_all=true`" 유도. 이 `Error:` 는 `is_error=True` 로 전달돼 시스템 프롬프트의 에러 복구 규율(재확인→재시도)을 발동시킨다. 부작용(파일 변경)이 있어 무조건 로컬 실행. 결과 메시지는 하네스가 생성하므로 `EXTERNAL_TOOLS` 아님(write_file 과 동일).

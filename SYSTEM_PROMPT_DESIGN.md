@@ -87,8 +87,9 @@
    - **왜**: Claude Code 는 툴마다 호출 조건을 description 에 박아 과다·과소 호출을 줄인다.
    - **조치(완료)**: read_file("내용을 알아야 할 때") / write_file("새로 만들거나 전체 재작성") / bash("전용 툴로 안 되는 작업에만") / grep("내용 검색") / glob("이름 패턴 검색") 에 트리거 조건 추가.
 
-4. **병렬 tool_use** (효율) — ⬜ 미적용 (루프 아키텍처 변경, 시스템 프롬프트 범위 밖)
-   - **왜**: Claude Code 는 "의존 없는 호출은 병렬로". 우리 루프는 한 응답의 여러 tool_use 를 순차 실행한다 — 독립 호출 병렬화로 지연 단축 가능. (단, 승인 게이트·순서 의존과의 상호작용 설계 필요)
+4. **병렬 tool_use** (효율) — ✅ **적용됨**
+   - **왜**: Claude Code 는 "의존 없는 호출은 병렬로". 한 응답의 여러 tool_use 를 병렬 실행해 지연을 줄인다.
+   - **조치(완료)**: `_execute_tool_blocks` 가 `ThreadPoolExecutor`(`MAX_PARALLEL_TOOLS=8`)로 동시 실행(`PARALLEL_TOOLS` 토글). 승인 게이트(`input()`)는 인터랙티브라 메인 스레드에서 순차 처리하고 승인된 툴만 병렬화, `tool_result` 는 원래 tool_use 순서대로 조립해 id 매칭·결정성 보존. 툴이 I/O 바운드(파일/네트워크/subprocess)라 스레드로 실제 동시성(실측 3×sleep1 → 3배 단축). 예외는 `_run_tool_safe` 로 격리.
 
 ---
 
