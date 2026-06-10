@@ -1,0 +1,15 @@
+#!/bin/sh
+# HWHarness (Rust) 전역 런처.
+# 심링크로 호출돼도 자기 실제 위치를 따라가 프로젝트 루트를 찾는다(하드코딩 경로 없음).
+# 어느 디렉토리에서 실행하든 루트로 이동해 .env / skills / sessions 가 해석되게 한 뒤 실행.
+SELF="$0"
+while [ -L "$SELF" ]; do SELF=$(readlink "$SELF"); done
+BINDIR=$(cd "$(dirname "$SELF")" && pwd)      # .../rust/bin
+ROOT=$(cd "$BINDIR/../.." && pwd)             # 저장소 루트
+cd "$ROOT" || exit 1
+BIN="$ROOT/rust/target/release/hwharness"
+if [ ! -x "$BIN" ]; then
+  echo "릴리스 바이너리가 없습니다. 먼저 빌드하세요: (cd $ROOT/rust && cargo build --release)" >&2
+  exit 1
+fi
+exec "$BIN" "$@"

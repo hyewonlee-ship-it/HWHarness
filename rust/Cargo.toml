@@ -1,0 +1,30 @@
+[package]
+name = "hwharness"
+version = "0.1.0"
+edition = "2021"
+description = "Claude Code 스타일 에이전트 하네스 (Rust 포팅). 회사 AI 프록시 pass-through."
+
+# lib(엔진) + bin(CLI) 분리 — 나중에 TUI 는 lib 를 그대로 쓰는 또 다른 프런트엔드가 된다.
+[lib]
+name = "hwharness"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hwharness"
+path = "src/main.rs"
+
+[[bin]]
+name = "hwharness-tui"
+path = "src/bin/tui.rs"
+
+[dependencies]
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+glob = "0.3"
+walkdir = "2"
+anyhow = "1"
+rustyline = "14"  # CLI 라인 편집(한글 등 멀티바이트 백스페이스 정상 처리)
+ratatui = "0.29"  # TUI (crossterm 백엔드 재노출 포함)
+unicode-width = "0.2"  # 한글 등 wide 문자 표시 폭 계산(커서 위치 정확히)

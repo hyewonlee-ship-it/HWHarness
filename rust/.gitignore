@@ -1,0 +1,4 @@
+/target
+/sessions
+.env
+Cargo.lock

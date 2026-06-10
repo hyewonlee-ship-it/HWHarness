@@ -1,0 +1,13 @@
+#!/bin/sh
+# HWHarness TUI (Rust) 전역 런처 — 자기 실제 위치를 따라 루트를 찾는다(하드코딩 경로 없음).
+SELF="$0"
+while [ -L "$SELF" ]; do SELF=$(readlink "$SELF"); done
+BINDIR=$(cd "$(dirname "$SELF")" && pwd)
+ROOT=$(cd "$BINDIR/../.." && pwd)
+cd "$ROOT" || exit 1
+BIN="$ROOT/rust/target/release/hwharness-tui"
+if [ ! -x "$BIN" ]; then
+  echo "TUI 바이너리가 없습니다. 먼저 빌드하세요: (cd $ROOT/rust && cargo build --release)" >&2
+  exit 1
+fi
+exec "$BIN" "$@"
