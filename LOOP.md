@@ -36,7 +36,7 @@
 └───────────────────────────┬──────────────────────────────────┘
                             │ tool_use
                             ▼
-        execute_tool(name, input)  ── read_file/write_file/bash/grep/glob
+        execute_tool(name, input)  ── read_file/write_file/edit_file/bash/grep/glob/web_fetch/web_search
 ```
 
 ## 단계별 상세
@@ -95,11 +95,13 @@
 | 툴 | 동작 |
 |---|---|
 | `read_file` | 파일 읽기 (없음/디렉토리/바이너리 에러 처리) |
-| `write_file` | 파일 쓰기 (상위 디렉토리 자동 생성) |
+| `write_file` | 파일 전체 쓰기 (상위 디렉토리 자동 생성) |
+| `edit_file` | 부분 교체 (`old_string`→`new_string`) + stale content 감지 |
 | `bash` | 셸 실행 (30s 타임아웃, stdout+stderr, 위험 커맨드 차단) |
 | `grep` | 정규식 재귀 검색 (`path:줄번호: 내용`) |
 | `glob` | 파일명 패턴 검색 (`**` 재귀) |
-| `web_search` | 웹 검색 (회사 프록시 Brave 엔드포인트, 제목·URL·요약) |
+| `web_fetch` | 특정 http/https URL 본문을 로컬에서 fetch (HTML→텍스트) |
+| `web_search` | 웹 검색 (서버사이드 `web_search_20250305`, 토글로 프록시 Brave 전환) |
 
 결과 문자열은 `tool_result` 로 모델에 돌아가고, 루프는 ②로 복귀한다. 모델이 더 호출할 게 없으면 ④에서 `end_turn` 으로 끝난다.
 

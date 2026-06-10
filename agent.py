@@ -126,7 +126,7 @@ _BASE_TOOLS = [
     {
         "name": "bash",
         "description": (
-            "전용 툴(read_file/write_file/grep/glob)로 할 수 없는 작업(빌드·실행·git 등)에만 사용한다. "
+            "전용 툴(read_file/write_file/edit_file/grep/glob)로 할 수 없는 작업(빌드·실행·git 등)에만 사용한다. "
             "셸 커맨드를 실행해 종료코드·stdout·stderr 를 반환한다. "
             "타임아웃 30초. rm -rf, sudo 등 위험한 커맨드는 차단된다."
         ),
@@ -862,7 +862,7 @@ DEFAULT_RULES = (
     "[툴 사용 규율]\n"
     "- 파일의 위치·내용을 모르면 추측하지 말고 glob(파일 찾기)·grep(내용 찾기)·read_file 로 먼저 확인한다.\n"
     "- 디렉토리 전체를 무작정 읽지 말고 범위를 좁혀 필요한 것만 읽는다.\n"
-    "- bash 는 전용 툴(read_file/write_file/grep/glob)로 안 되는 일에만 쓴다. rm -rf·sudo 등 위험 커맨드는 시도하지 않는다.\n"
+    "- bash 는 전용 툴(read_file/write_file/edit_file/grep/glob)로 안 되는 일에만 쓴다. rm -rf·sudo 등 위험 커맨드는 시도하지 않는다.\n"
     "- 학습 시점 이후의 사실이나 외부 정보가 필요하면 web_search 로 확인한다.\n"
     "\n"
     "[에러 복구]\n"

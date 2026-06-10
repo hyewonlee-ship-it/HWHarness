@@ -31,6 +31,9 @@ PRICE_CACHE_READ = PRICE_IN * 0.10
 MSG = "준비됐으면 'ok' 한 단어만 답해."  # A 시나리오: 두 호출에서 동일 (프리픽스 일치 보장)
 
 # 실제 run_session 과 동일하게 시스템 프롬프트 구성 (skills/progress 제외, 결정적)
+# 주의: 아래 environment 의 툴 목록(6종)은 캐싱 리포트의 BASE≈3,913토큰 baseline 을 위한 고정값이다.
+# 최신 8종으로 늘리면 프리픽스 토큰 수가 바뀌어 .docs/prompt-caching-report.md 의 측정치와 어긋나니,
+# 의도적으로 그대로 둔다(데모용 합성 환경, 실제 TOOLS 와 무관).
 BASE_SYSTEM = build_system_prompt(
     role=agent.DEFAULT_ROLE,
     environment="작업 디렉토리: /demo\nOS: Demo\n사용 가능한 툴: read_file, write_file, bash, grep, glob, web_search",

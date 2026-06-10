@@ -55,7 +55,7 @@ def main():
     print("=" * 60)
     print("  HWHarness 대화형 테스트")
     print("  - 작업을 입력하면 에이전트가 툴을 써서 처리합니다.")
-    print("  - 툴: read_file / write_file / bash / grep / glob / web_search")
+    print("  - 툴: read_file / write_file / edit_file / bash / grep / glob / web_fetch / web_search")
     print("  - '/' 로 시작하면 명령. /help 로 전체 명령 보기")
     print("=" * 60)
 

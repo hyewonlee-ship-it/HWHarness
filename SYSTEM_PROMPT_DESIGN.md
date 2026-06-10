@@ -81,7 +81,7 @@
 
 2. **툴 결과를 `<tool_output>` 구분자로 감싸기** (인젝션 방어 강화) — ✅ **적용됨**
    - **왜**: 프롬프트 *지시* 차원 방어에 더해, tool_result 를 `<tool_output>...</tool_output>` 로 감싸 "여기부터 데이터" 경계를 **토큰 레벨**로 박는다. 모델이 데이터/지시를 더 확실히 구분.
-   - **조치(완료)**: `_make_tool_result(untrusted=)` 추가. 외부 입력 툴(`EXTERNAL_TOOLS` = read_file/grep/glob/bash/web_search) 결과만 래핑. 에러 판정은 원본 기준 유지.
+   - **조치(완료)**: `_make_tool_result(untrusted=)` 추가. 외부 입력 툴(`EXTERNAL_TOOLS` = read_file/grep/glob/bash/web_search/web_fetch) 결과만 래핑. 에러 판정은 원본 기준 유지.
 
 3. **툴 description 에 "When to use" 조건 추가** — ✅ **적용됨**
    - **왜**: Claude Code 는 툴마다 호출 조건을 description 에 박아 과다·과소 호출을 줄인다.
