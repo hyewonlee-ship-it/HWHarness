@@ -4,14 +4,17 @@
 //! 그대로 히스토리에 재전송해야 하므로 `serde_json::Value` 로 다룬다(충실한 round-trip).
 
 use crate::config::Config;
-use crate::{CACHE_MESSAGES, CACHE_PROMPT, MAX_TOKENS, MODEL};
+use crate::{CACHE_MESSAGES, CACHE_PROMPT, DEFAULT_MODEL, MAX_TOKENS};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
+use std::sync::{Arc, Mutex};
 
 pub struct Client {
     cfg: Config,
     http: reqwest::blocking::Client,
+    /// 현재 모델 — 공유 상태라 프런트엔드(/model 명령)가 런타임에 바꿀 수 있다.
+    model: Arc<Mutex<String>>,
 }
 
 /// 모델 응답에서 우리가 쓰는 것만 추린 형태.
@@ -21,11 +24,20 @@ pub struct ApiResponse {
 }
 
 impl Client {
-    pub fn new(cfg: Config) -> Result<Client> {
+    pub fn new(cfg: Config, model: String) -> Result<Client> {
         let http = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()?;
-        Ok(Client { cfg, http })
+        Ok(Client { cfg, http, model: Arc::new(Mutex::new(model)) })
+    }
+
+    /// 모델 핸들 복제 — 프런트엔드가 /model 로 바꾸거나 현재 값을 읽는 데 쓴다.
+    pub fn model_handle(&self) -> Arc<Mutex<String>> {
+        Arc::clone(&self.model)
+    }
+
+    fn model(&self) -> String {
+        self.model.lock().map(|g| g.clone()).unwrap_or_else(|_| DEFAULT_MODEL.to_string())
     }
 
     /// 한 번의 모델 호출. tools 는 JSON 배열, messages 는 메시지 객체 배열.
@@ -37,7 +49,7 @@ impl Client {
         tool_choice: Option<&Value>,
     ) -> Result<ApiResponse> {
         let mut body = json!({
-            "model": MODEL,
+            "model": self.model(),
             "max_tokens": MAX_TOKENS,
             // 멀티턴 캐싱: 마지막 메시지에 브레이크포인트를 단 복사본을 전송 (원본 불변)
             "messages": cache_messages(messages),
@@ -70,7 +82,7 @@ impl Client {
         on_text: &dyn Fn(&str),
     ) -> Result<ApiResponse> {
         let mut body = json!({
-            "model": MODEL,
+            "model": self.model(),
             "max_tokens": MAX_TOKENS,
             "messages": cache_messages(messages),
             "stream": true,
@@ -170,7 +182,7 @@ impl Client {
     /// tools 없는 단발 호출 (컨텍스트 요약 등).
     pub fn complete_text(&self, prompt: &str) -> Result<String> {
         let body = json!({
-            "model": MODEL,
+            "model": self.model(),
             "max_tokens": 2048,
             "messages": [{ "role": "user", "content": prompt }],
         });

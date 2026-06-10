@@ -5,7 +5,7 @@
 
 use hwharness::client::Client;
 use hwharness::config::Config;
-use hwharness::{agent, session, skills, AgentEvent, MODEL};
+use hwharness::{agent, session, skills, AgentEvent};
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -18,6 +18,7 @@ use unicode_width::UnicodeWidthStr;
 use anyhow::Result;
 use serde_json::Value;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -61,21 +62,23 @@ struct App {
     scroll_back: u16,                       // 위로 스크롤한 정도(0=맨 아래 따라감)
     open_assistant: Option<usize>,          // 스트리밍 중인 assistant entry 인덱스
     modal: Option<(String, Sender<bool>)>,  // 승인 대기
+    model: Arc<Mutex<String>>,              // 현재 모델(공유) — /model 로 변경
     should_quit: bool,
 }
 
 impl App {
-    fn new() -> App {
+    fn new(model: Arc<Mutex<String>>) -> App {
         App {
             transcript: vec![Entry {
                 kind: Kind::Event,
-                text: "HWHarness TUI — 입력 후 Enter, Esc 종료, PgUp/PgDn 스크롤. bash 는 승인(y/n).".into(),
+                text: "HWHarness TUI — Enter 전송, Esc 종료, ↑/↓·PgUp/PgDn 스크롤. '/model sonnet' 로 모델 변경.".into(),
             }],
             input: String::new(),
             working: false,
             scroll_back: 0,
             open_assistant: None,
             modal: None,
+            model,
             should_quit: false,
         }
     }
@@ -193,7 +196,8 @@ fn ui(f: &mut Frame, app: &App) {
     f.set_cursor_position((cx.min(chunks[1].x + chunks[1].width.saturating_sub(1)), chunks[1].y + 1));
 
     // 상태줄
-    let status = format!(" 모델 {MODEL} · {} ", if app.working { "● 작업중" } else { "○ 대기" });
+    let model = app.model.lock().map(|g| g.clone()).unwrap_or_default();
+    let status = format!(" 모델 {model} · {} ", if app.working { "● 작업중" } else { "○ 대기" });
     f.render_widget(Paragraph::new(status).style(Style::new().fg(Color::DarkGray)), chunks[2]);
 
     // 승인 모달
@@ -236,6 +240,20 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, task_tx: &Sender
                 app.should_quit = true;
                 return;
             }
+            if let Some(arg) = task.strip_prefix("/model") {
+                let arg = arg.trim();
+                let msg = if arg.is_empty() {
+                    format!("현재 모델: {}", app.model.lock().map(|g| g.clone()).unwrap_or_default())
+                } else {
+                    let m = hwharness::resolve_model(arg);
+                    if let Ok(mut g) = app.model.lock() {
+                        *g = m.clone();
+                    }
+                    format!("모델 변경: {m}")
+                };
+                app.push(Kind::Event, msg);
+                return;
+            }
             app.push(Kind::User, task.clone());
             app.working = true;
             app.scroll_back = 0;
@@ -255,7 +273,8 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, task_tx: &Sender
 
 fn main() -> Result<()> {
     let cfg = Config::from_env()?;
-    let client = Client::new(cfg)?;
+    let client = Client::new(cfg, hwharness::default_model())?;
+    let model_handle = client.model_handle(); // UI 가 /model 로 변경 + 상태줄 표시
 
     // 세션/스킬 디렉토리는 시작 시점 cwd 기준 절대경로로 고정 → change_dir 후에도 안 깨짐.
     let home = std::env::current_dir().unwrap_or_default();
@@ -314,7 +333,7 @@ fn main() -> Result<()> {
 
     // ── UI 스레드: ratatui 렌더 루프 ───────────────────────────────────────
     let mut terminal = ratatui::init();
-    let mut app = App::new();
+    let mut app = App::new(model_handle);
     app.push(
         Kind::Event,
         if prior_len == 0 {

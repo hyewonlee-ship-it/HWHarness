@@ -16,7 +16,25 @@ pub mod skills;
 use serde_json::Value;
 
 // ── 상수 (Python 의 MODEL/MAX_TOKENS 등에 대응) ──────────────────────────────
-pub const MODEL: &str = "claude-haiku-4-5";
+pub const DEFAULT_MODEL: &str = "claude-haiku-4-5";
+
+/// 시작 시 모델: HWHARNESS_MODEL 환경변수(있으면) 또는 기본 haiku.
+pub fn default_model() -> String {
+    std::env::var("HWHARNESS_MODEL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+}
+
+/// 짧은 별칭(haiku/sonnet/opus)을 정식 모델 ID 로. 그 외는 입력 그대로 사용.
+pub fn resolve_model(name: &str) -> String {
+    match name.trim() {
+        "haiku" => "claude-haiku-4-5".to_string(),
+        "sonnet" => "claude-sonnet-4-6".to_string(),
+        "opus" => "claude-opus-4-8".to_string(),
+        other => other.to_string(),
+    }
+}
 pub const MAX_TOKENS: u32 = 16000;
 pub const MAX_TURNS: u32 = 25;
 pub const CACHE_PROMPT: bool = true; // system 블록 cache_control (3,913<4,096 이라 현재 no-op)

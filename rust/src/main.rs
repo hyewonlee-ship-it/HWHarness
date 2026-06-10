@@ -32,7 +32,8 @@ fn truncate(s: &str, n: usize) -> String {
 
 fn main() -> Result<()> {
     let cfg = Config::from_env()?;
-    let client = Client::new(cfg)?;
+    let client = Client::new(cfg, hwharness::default_model())?;
+    let model = client.model_handle(); // /model 로 런타임 변경 + 현재값 읽기
 
     // 세션/스킬 디렉토리는 시작 시점 cwd(런처가 루트로 이동) 기준 절대경로로 고정.
     // → 에이전트가 change_dir 로 작업 디렉토리를 바꿔도 세션 저장·스킬 로딩이 안 깨진다.
@@ -95,6 +96,7 @@ fn main() -> Result<()> {
     println!("============================================================");
     println!("  HWHarness (Rust) — 대화형");
     println!("  - 툴: read_file / write_file / edit_file / bash / grep / glob / web_fetch / web_search / change_dir");
+    println!("  - 모델: {} ('/model sonnet|haiku|opus' 로 변경)", model.lock().unwrap());
     println!("  - '/exit' 종료, '/skills' 스킬 목록");
     println!("============================================================");
 
@@ -120,6 +122,17 @@ fn main() -> Result<()> {
         }
         if task == "/skills" {
             println!("스킬: {}", skills::list_skills(&skills_dir).join(", "));
+            continue;
+        }
+        if let Some(arg) = task.strip_prefix("/model") {
+            let arg = arg.trim();
+            if arg.is_empty() {
+                println!("현재 모델: {}", model.lock().unwrap());
+            } else {
+                let m = hwharness::resolve_model(arg);
+                *model.lock().unwrap() = m.clone();
+                println!("모델 변경: {m}");
+            }
             continue;
         }
 
