@@ -21,9 +21,16 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
-const SESSION_ID: &str = "tui";
-const SESSION_DIR: &str = "sessions";
-const SKILLS_DIR: &str = "skills";
+/// 세션 ID 결정: HWHARNESS_SESSION 이 있으면 그 세션 이어받기, 없으면 켤 때마다 새 세션.
+fn session_id() -> String {
+    std::env::var("HWHARNESS_SESSION").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("tui-{ts}-{}", std::process::id()) // 같은 초에 여러 번 켜도 안 겹치게 pid 추가
+    })
+}
 
 /// 엔진 → UI 메시지.
 enum UiMsg {
@@ -164,17 +171,18 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(3), Constraint::Length(1)]).split(f.area());
 
-    // 트랜스크립트 (자동 하단 추적 + PgUp 스크롤)
+    // 트랜스크립트 (자동 하단 추적 + 스크롤)
     let lines = app.lines();
-    let total = lines.len() as u16;
-    let h = chunks[0].height.saturating_sub(2);
-    let max_scroll = total.saturating_sub(h);
-    let scroll = max_scroll.saturating_sub(app.scroll_back);
-    let transcript = Paragraph::new(Text::from(lines))
-        .block(Block::bordered().title(" HWHarness (Rust TUI) "))
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    f.render_widget(transcript, chunks[0]);
+    let inner_w = chunks[0].width.saturating_sub(2); // 테두리 제외 폭
+    let inner_h = chunks[0].height.saturating_sub(2); // 테두리 제외 높이
+    let p = Paragraph::new(Text::from(lines))
+        .block(Block::bordered().title(" HWHarness (Rust TUI) — ↑/↓·PgUp/PgDn 스크롤 "))
+        .wrap(Wrap { trim: false });
+    // 줄바꿈(wrap)까지 반영한 실제 렌더 줄 수로 스크롤을 계산해야 끝까지·옛 대화까지 보인다.
+    let total = p.line_count(inner_w) as u16;
+    let max_scroll = total.saturating_sub(inner_h);
+    let scroll = max_scroll.saturating_sub(app.scroll_back.min(max_scroll)); // 0=맨아래, 위로 갈수록 옛 대화
+    f.render_widget(p.scroll((scroll, 0)), chunks[0]);
 
     // 입력
     let title = if app.working { " 입력 (작업 중…) " } else { " 입력 (Enter 전송 · Esc 종료) " };
@@ -237,8 +245,10 @@ fn handle_key(app: &mut App, code: KeyCode, mods: KeyModifiers, task_tx: &Sender
             app.input.pop(); // char 단위 — 한글도 정상
         }
         KeyCode::Char(c) => app.input.push(c),
-        KeyCode::PageUp => app.scroll_back = app.scroll_back.saturating_add(5),
-        KeyCode::PageDown => app.scroll_back = app.scroll_back.saturating_sub(5),
+        KeyCode::Up => app.scroll_back = app.scroll_back.saturating_add(1),
+        KeyCode::Down => app.scroll_back = app.scroll_back.saturating_sub(1),
+        KeyCode::PageUp => app.scroll_back = app.scroll_back.saturating_add(10),
+        KeyCode::PageDown => app.scroll_back = app.scroll_back.saturating_sub(10),
         _ => {}
     }
 }
@@ -247,12 +257,18 @@ fn main() -> Result<()> {
     let cfg = Config::from_env()?;
     let client = Client::new(cfg)?;
 
+    // 세션/스킬 디렉토리는 시작 시점 cwd 기준 절대경로로 고정 → change_dir 후에도 안 깨짐.
+    let home = std::env::current_dir().unwrap_or_default();
+    let session_dir = home.join("sessions").to_string_lossy().into_owned();
+    let skills_dir = home.join("skills").to_string_lossy().into_owned();
+
     let environment = format!(
-        "작업 디렉토리: {}\nOS: {}\n사용 가능한 툴: read_file, write_file, edit_file, bash, grep, glob, web_fetch, web_search",
-        std::env::current_dir().unwrap_or_default().display(),
+        "작업 디렉토리: {}\nOS: {}\n사용 가능한 툴: read_file, write_file, edit_file, bash, grep, glob, web_fetch, web_search, change_dir",
+        home.display(),
         std::env::consts::OS,
     );
-    let progress = session::read_progress(SESSION_DIR, SESSION_ID);
+    let sid = session_id(); // 새 세션(기본) 또는 HWHARNESS_SESSION 이어받기
+    let progress = session::read_progress(&session_dir, &sid);
     let base_system = skills::build_system_prompt(
         skills::DEFAULT_ROLE,
         &environment,
@@ -261,7 +277,9 @@ fn main() -> Result<()> {
         skills::DEFAULT_OUTPUT_FORMAT,
         "",
     );
-    let mut messages: Vec<Value> = session::load(SESSION_DIR, SESSION_ID);
+    let mut messages: Vec<Value> = session::load(&session_dir, &sid);
+    let prior_len = messages.len(); // messages 는 곧 엔진 스레드로 move 되므로 미리 길이 확보
+    let sid_engine = sid.clone(); // 엔진 스레드로 이동시킬 복사본
 
     let (task_tx, task_rx) = mpsc::channel::<String>();
     let (ui_tx, ui_rx) = mpsc::channel::<UiMsg>();
@@ -279,7 +297,7 @@ fn main() -> Result<()> {
             rrx.recv().unwrap_or(false) // UI 종료로 sender drop 시 false
         };
         for task in task_rx {
-            let skills_text = skills::load_relevant_skills(&task, SKILLS_DIR);
+            let skills_text = skills::load_relevant_skills(&task, &skills_dir);
             let sys = if skills_text.is_empty() {
                 base_system.clone()
             } else {
@@ -288,8 +306,8 @@ fn main() -> Result<()> {
             if let Err(e) = agent::run_agent(&client, &task, &mut messages, Some(sys.as_str()), Some(&approve), &emit) {
                 let _ = ui_tx.send(UiMsg::Event(AgentEvent::Notice(format!("오류: {e}"))));
             }
-            session::save(SESSION_DIR, SESSION_ID, &messages).ok();
-            session::append_progress(SESSION_DIR, SESSION_ID, &task);
+            session::save(&session_dir, &sid_engine, &messages).ok();
+            session::append_progress(&session_dir, &sid_engine, &task);
             let _ = ui_tx.send(UiMsg::TurnDone);
         }
     });
@@ -297,6 +315,14 @@ fn main() -> Result<()> {
     // ── UI 스레드: ratatui 렌더 루프 ───────────────────────────────────────
     let mut terminal = ratatui::init();
     let mut app = App::new();
+    app.push(
+        Kind::Event,
+        if prior_len == 0 {
+            format!("세션: {sid} (새 대화) · 이어받으려면 HWHARNESS_SESSION={sid} 로 실행")
+        } else {
+            format!("세션: {sid} (이전 대화 {prior_len} 메시지 이어받음)")
+        },
+    );
     let res = run_ui(&mut terminal, &mut app, &task_tx, &ui_rx);
     ratatui::restore();
 

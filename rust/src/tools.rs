@@ -26,6 +26,7 @@ pub fn execute_tool(name: &str, input: &Value) -> String {
         "grep" => grep(s(input, "pattern"), opt(input, "path").unwrap_or("."), opt(input, "glob")),
         "glob" => glob_files(s(input, "pattern"), opt(input, "path").unwrap_or(".")),
         "web_fetch" => web_fetch(s(input, "url")),
+        "change_dir" => change_dir(s(input, "path")),
         "web_search" => "(web_search 는 서버사이드 — 로컬에서 실행되지 않습니다)".into(),
         other => format!("알 수 없는 툴: {other}"),
     }
@@ -294,6 +295,18 @@ fn html_to_text(html: &str) -> String {
     nl.replace_all(&s, "\n\n").trim().to_string()
 }
 
+/// 작업 디렉토리(프로세스 cwd)를 바꾼다. 이후 모든 파일/셸 툴이 이 경로 기준으로 동작한다.
+/// bash 의 cd 는 명령마다 새 서브프로세스라 지속되지 않으므로, 디렉토리 이동은 이 툴을 쓴다.
+fn change_dir(path: &str) -> String {
+    match std::env::set_current_dir(path) {
+        Ok(_) => {
+            let now = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+            format!("OK: 작업 디렉토리를 {now} 로 변경했습니다.")
+        }
+        Err(e) => format!("Error: 디렉토리 변경 실패: {path} ({e})"),
+    }
+}
+
 // ── tool_result 생성 (인젝션 방어 래핑) ──────────────────────────────────────
 pub fn make_tool_result(tool_use_id: &str, result: &str, untrusted: bool) -> Value {
     let is_err = result.starts_with("Error:");
@@ -344,5 +357,7 @@ fn base_tools() -> Vec<Value> {
             "input_schema":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"]}}),
         json!({"name":"web_fetch","description":"이미 아는 특정 http/https URL 의 콘텐츠를 가져와 텍스트로 반환한다. 검색이 아니라 '이 페이지를 읽어줘'일 때.",
             "input_schema":{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}}),
+        json!({"name":"change_dir","description":"작업 디렉토리(cwd)를 바꾼다. 이후 read_file/write_file/edit_file/bash/grep/glob 이 모두 이 경로 기준으로 동작한다. bash 의 cd 는 명령마다 초기화되어 지속되지 않으므로, 다른 폴더로 옮겨 작업하려면 이 툴을 쓴다.",
+            "input_schema":{"type":"object","properties":{"path":{"type":"string","description":"이동할 디렉토리 경로"}},"required":["path"]}}),
     ]
 }

@@ -14,7 +14,8 @@ fn tool_resource(block: &Value) -> (Option<String>, char) {
         "write_file" | "edit_file" => (Some(abspath(path("path"))), 'w'),
         "read_file" => (Some(abspath(path("path"))), 'r'),
         "grep" | "glob" => (Some(abspath(if path("path").is_empty() { "." } else { path("path") })), 'r'),
-        "bash" => (Some("\0bash".to_string()), 'w'),
+        // bash(불투명) 와 change_dir(cwd 전역 변경)은 모든 FS 툴에 영향 → 전역 장벽으로 순차화.
+        "bash" | "change_dir" => (Some("\0bash".to_string()), 'w'),
         _ => (None, 'r'), // web_search / web_fetch
     }
 }

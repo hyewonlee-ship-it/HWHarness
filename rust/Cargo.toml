@@ -26,5 +26,5 @@ glob = "0.3"
 walkdir = "2"
 anyhow = "1"
 rustyline = "14"  # CLI 라인 편집(한글 등 멀티바이트 백스페이스 정상 처리)
-ratatui = "0.29"  # TUI (crossterm 백엔드 재노출 포함)
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }  # TUI + line_count(wrap 반영 줄 수)
 unicode-width = "0.2"  # 한글 등 wide 문자 표시 폭 계산(커서 위치 정확히)
